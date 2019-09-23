@@ -1,0 +1,1552 @@
+---
+title: "20190706_workflow_NG8133_RNAseq"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## [0.0.] Load necessary packages
+```{r message=FALSE}
+library(here)
+library(tidyverse)
+library(ggrepel)
+library(ggrastr)
+library(UpSetR)
+
+library(org.Dm.eg.db)
+library(sleuth)
+library(GOstats)
+library(clusterProfiler)
+library(biomaRt)
+
+library(doParallel)
+library(foreach)
+registerDoParallel(cores=48)
+```
+
+## [0.1.] Save & load data
+#### previous "20190706.RData"
+```{r eval=FALSE}
+save.image(
+    paste0(
+      here("data/20190706_NG8133_RNAseq/"),
+      "20190707.RData"
+    )
+  )
+```
+
+```{r}
+load(
+   paste0(
+      here("data/20190706_NG8133_RNAseq/"),
+      "20190707.RData"
+    )
+  )
+```
+
+##---------------------##
+##----Prerequisites----##
+##---------------------##
+
+## [1.0.] Get gene conversions
+```{r message=FALSE}
+key_types <- keytypes(org.Dm.eg.db)
+keys <- keys(org.Dm.eg.db, keytype = "ENSEMBLTRANS")
+dm6 <- AnnotationDbi::select(
+  x = org.Dm.eg.db,
+  keys = keys,
+  keytype="ENSEMBLTRANS",
+  columns = c(
+    "ENSEMBL", "SYMBOL"#, "FLYBASE", "ENTREZID"
+    )
+  )
+dm6 <- dm6 %>%
+  dplyr::rename(
+    #flybase_gene = FLYBASE,
+    #entrez_gene = ENTREZID,
+    target_id = ENSEMBLTRANS,
+    ens_gene = ENSEMBL,
+    ext_gene = SYMBOL
+  ) %>% 
+  distinct(
+    target_id,
+    .keep_all = TRUE
+  )
+any(duplicated(dm6$target_id))
+```
+
+## [1.1.] Sleuth spread_abundance_by
+```{r}
+spread_abundance_by <- function(abund, var, which_order) {
+    # var <- lazyeval::lazy(var)
+    abund <- data.table::as.data.table(abund)
+    var_spread <- data.table::dcast(abund, target_id ~ sample, value.var = var)
+    # there is a discrepancy between data table's sorting of character vectors
+    # and how tidyr previously (or the order function) sorts character vectors
+    # so next step is needed to make sure the order is correct
+    var_spread <- var_spread[order(var_spread$target_id), ]
+    var_spread <- as.data.frame(var_spread, stringsAsFactors = FALSE)
+    rownames(var_spread) <- var_spread$target_id
+    var_spread["target_id"] <- NULL
+    result <- as.matrix(var_spread)
+  
+    result[, which_order, drop = FALSE]
+  }
+```
+
+##---------------##
+##----Biomart----##
+##---------------##
+
+## [1.2.] Set mart
+#### "biomaRt::listMarts()"
+```{r}
+pattern = "melanogaster"
+
+ensembl <- biomaRt::useMart(
+    biomart = "ENSEMBL_MART_ENSEMBL",
+    host = "www.ensembl.org",
+    verbose = TRUE
+  )
+
+dataset_ <- biomaRt::listDatasets(
+    mart = ensembl,
+    verbose = TRUE
+  ) %>%
+  dplyr::filter(
+    grepl(pattern,dataset)
+  ) %>%
+  pull(dataset)
+
+ensembl <- biomaRt::useDataset(
+    dataset = dataset_,
+    mart = ensembl,
+    verbose = TRUE
+  )
+```
+
+## [1.3.] Identify mart attributes & filters
+```{r}
+biomaRt::listAttributes(
+    mart = ensembl
+  )
+
+biomaRt::listFilters(
+    mart = ensembl
+  )
+```
+
+## [1.4.] Get genes for GO term
+#### previous "GO:0006955","GO:0007254"
+```{r}
+attributes_ <- c(
+    "ensembl_gene_id","external_gene_name",
+    "flybase_gene_id","flybasename_gene",
+    "entrezgene_id"
+  )
+values_ <- c(
+    "GO:0006955"
+  )
+
+gos_ <- biomaRt::getBM(
+    mart = ensembl,
+    attributes = attributes_,
+    values = values_,
+    filters = c("go_parent_term"),
+    checkFilters = TRUE,
+    verbose = TRUE
+  )
+
+gos <- gos_ %>%
+  dplyr::distinct(external_gene_name) %>%
+  dplyr::pull(external_gene_name)
+```
+
+## [1.5.] Identify 'immune response' GO term
+#### previous "GO:0006955"
+```{r}
+AnnotationDbi::columns(org.Dm.eg.db)
+AnnotationDbi::keytypes(org.Dm.eg.db)
+
+goKeys <- AnnotationDbi::keys(
+    x = org.Dm.eg.db,
+    keytype = "GO"
+  )
+allGO <- AnnotationDbi::select(
+    x = org.Dm.eg.db,
+    keys = "GO:0007254",
+    columns = c("GENENAME","SYMBOL","ENSEMBL","ENTREZID"),
+    keytype = "GOALL"
+  ) %>%
+  dplyr::distinct(SYMBOL, .keep_all=TRUE)
+```
+
+##--------------------##
+##----Run_kallisto----##
+##--------------------##
+
+## [2.0.] Identify unique sample IDs
+```{r}
+sam <- list.files(
+    path = here("data/20190706_NG8133_RNAseq")
+  ) %>%
+  stringr::str_replace('(.*)_\\d.fastq','\\1') %>%
+  unique
+```
+
+## [2.1.] Start kallisto jobs
+```{r}
+geoKall <- foreach(i=1:length(sam)) %dopar% {
+    
+    fwr <- paste0(
+        here("data/20190706_NG8133_RNAseq/"),
+        sam[i],
+        "_1.fastq"
+      )
+    rev <- paste0(
+        here("data/20190706_NG8133_RNAseq/"),
+        sam[i],
+        "_2.fastq"
+      )
+    
+    out <- paste0(
+        here("data/20190706_NG8133_RNAseq/"),
+        str_replace(sam[i],'(.*)_\\d','\\1'),
+        '_kout'
+      )
+    
+    kal <- paste(
+        "kallisto quant",
+        "-i ~/resources/dmel-all-transcript-r6.19.kidx",
+        "-b 100",
+        "-t 4", 
+        "-o", out,
+        "--genomebam",
+        "--gtf ~/resources/dmel-all-r6.19.gtf.gz",
+        "--chromosomes ~/resources/dmel-r6.19.chrom.sizes.mod",
+        sep = " "
+      )
+    print(paste(kal,fwr,rev,sep=" "))
+    base::system(
+        command = paste(kal,fwr,rev,sep=" ")
+      )
+      
+    return(out)
+  }
+```
+
+## [2.2.] Save & load geoKall
+```{r}
+saveRDS(
+    object = geoKall,
+    file = paste0(
+        here("data/20190706_NG8133_RNAseq/"),
+        format(Sys.time(),"%Y%m%d"),
+        "_geoKall",
+        ".rds"
+      ),
+    compress = TRUE
+  )
+```
+
+```{r}
+geoKall <- readRDS(
+  file = paste0(
+        here("data/20190706_NG8133_RNAseq/"),
+        format(Sys.time(),"%Y%m%d"),
+        "_geoKall",
+        ".rds"
+      )
+  )
+```
+
+##------------------##
+##----Run_sleuth----##
+##------------------##
+
+## [3.0.] Build sample_overview
+```{r}
+cols <- tibble::tibble(
+    con = c("w1118","RasV12","lglRNAiRasV12","lglRNAiRasV12_FM"),
+    col = c("#FFAA00","#AA3939","#2D882D","#2D4571") #226666
+  )
+
+sample_overview <- tibble::tibble(
+    path = unlist(geoKall)
+  ) %>%
+  dplyr::mutate(
+    condition = str_replace(
+      path,
+      '.*_Bx(.*?(_FM){0,1})_.*',
+      '\\1'
+    ),
+    sample = str_replace(
+      path,
+      '.*_Bx(.*?(_FM){0,1}_\\d{1})_.*',
+      '\\1'
+    ),
+    col = map_chr(
+      condition,
+      function(x){
+        return(
+          cols %>%
+            dplyr::filter(con==x) %>%
+            pull(col)
+        )
+      }
+    )
+  ) %>%
+  dplyr::select(2:4,1)
+```
+
+## [3.1.] Helper function to prepare a full_model for sleuth_object
+```{r}
+designer <- function(goi,ctrl, df = sample_overview){
+    
+    #cat("Experiment:\t",goi,"\tControl:\t",ctrl,"\t")
+    
+    tmp <- df %>%
+      dplyr::filter(condition %in% c(goi,ctrl))
+    
+    allGoi <- map(
+      goi,
+      function(coi){
+        return(
+          tmp %>% 
+            dplyr::mutate(
+              exp = map_int(
+                condition,
+                function(x){
+                  if(x %in% coi){
+                    return(1L)
+                  } else {
+                    return(0L)
+                  }
+                }
+              )
+            ) %>%
+            dplyr::rename(.,!!coi := exp) %>%
+            dplyr::select(!!!coi)
+          )
+        }
+      ) %>%
+      dplyr::bind_cols(.) %>%
+      dplyr::mutate(
+        `(Intercept)` = 1L
+      )
+    
+    full_design <- base::as.matrix(allGoi)
+    rownames(full_design) <- tmp$sample
+    
+    if(is(full_design, "matrix")){
+        return(full_design)
+      }
+  }
+```
+
+## [3.2.] Create new sleuth object with full_design
+#### 'gene_mode' crucial argument for sleuth_prep (see help)
+```{r}
+goi = "RasV12" #c("RasV12","lglRNAiRasV12","lglRNAiRasV12_FM")
+ctrl = "w1118"
+full_design <- designer(goi,ctrl)
+design_overview <- sample_overview %>%
+      dplyr::filter(condition %in% c(goi,ctrl))
+
+sout <- sleuth::sleuth_prep(
+    sample_to_covariates = design_overview,
+    full_model = full_design,
+    target_mapping = dm6,
+    aggregation_column = 'ext_gene',
+    extra_bootstrap_summary = TRUE,
+    gene_mode = TRUE
+  )
+```
+
+## [3.3.] Evaluate mapping & design
+```{r}
+sout$target_mapping
+sout$design_matrix
+```
+
+## [3.3.] Customized PCA plot data preparation (see [0.2.])
+#### 'est_counts' for transcript-centric modelling
+#### 'scaled_reads_per_base' for gene-centric modelling
+#### 'sout$obs_norm_filt' also includes tpm values
+```{r}
+mat <- spread_abundance_by(
+    abund = sout$obs_norm_filt,
+    var = 'scaled_reads_per_base',
+    which_order = sout$sample_to_covariates$sample
+  )
+pca_df <- as.data.frame(
+    prcomp(t(mat))$x[,c(1L,2L)]
+  )
+pca_df$sample <- base::rownames(pca_df)
+pca_df <- pca_df %>%
+  as_tibble() %>%
+  left_join(
+      .,
+      sout$sample_to_covariates,
+      by = 'sample'
+    ) %>%
+  dplyr::mutate(
+    condition = factor(
+      condition,
+      levels = cols$con,
+      ordered = TRUE
+    )
+  )
+```
+
+#### [3.4.] Customized PCA plot
+```{r}
+pca <- ggplot(
+    data = pca_df,
+    aes(
+      x = PC1,
+      y = PC2,
+      colour = condition
+    )
+  ) +
+  geom_point(
+    alpha = 0.6,
+    size = 6
+  ) +
+  scale_color_manual(
+    breaks = cols$con,
+    limits = cols$con,
+    values = cols$col
+  ) +
+  theme_bw() +
+  theme(
+    legend.justification = c(0,1),
+    legend.position = c(0.58,0.32),
+    legend.background = element_rect(
+        fill = "grey75"
+      ),
+    legend.title = element_blank(),
+    aspect.ratio = 1
+  )
+print(pca)
+```
+
+#### [3.5.] Save PCA plot
+```{r}
+for(ext in c("pdf", "png")){
+  ggsave(
+    filename = paste0(
+        here("results/20190706_NG8133_RNAseq/"),
+        format(Sys.time(), "%Y%m%d"),
+        "_customized_pca_plot_allConditions",
+        ".", ext
+        ),
+    plot = pca,
+    device = ext,
+    dpi = 300,
+    width = 6,
+    height = 6
+  )
+}
+```
+
+## [3.6.] Get summary from PCA
+```{r}
+pca <- prcomp(t(mat))
+base::summary(pca)
+```
+
+```{r}
+plot_bootstrap(sout, 'Drs', color_by = 'condition')
+```
+
+##-----------------------------##
+##----Statistical_modelling----##
+##-----------------------------##
+## [4.0.] Fit measurement error model
+```{r}
+sout <- sleuth::sleuth_fit(
+    obj = sout,
+    fit_name = "full"
+  )
+sout <- sleuth::sleuth_fit(
+    obj = sout,
+    formula = ~1,
+    fit_name = "reduced"
+  )
+models(sout)
+```
+
+## [4.1.] Perform likelihood ratio test = lrt
+```{r}
+sout <- sleuth::sleuth_lrt(
+    obj = sout,
+    null_model = "reduced",
+    alt_model = "full"
+  )
+sleuth::tests(sout)
+```
+
+## [4.2.] Perform wald test for individual comparisons
+```{r}
+conditions <- full_design %>% 
+  as_tibble %>%
+  dplyr::select(-`(Intercept)`) %>%
+  base::colnames(.)
+
+for(con in conditions){
+  sout <- sleuth::sleuth_wt(
+      obj = sout,
+      which_beta = con,
+      which_model = 'full'
+    )
+}
+sleuth::tests(sout)
+```
+
+## [4.3.] Extract data for sigDE genes
+#### according to linear regression transformation
+```{r}
+res_lrt <- sleuth::sleuth_results(
+    obj = sout,
+    which_model = "full",
+    test_type = "lrt",
+    test = "reduced:full",
+    rename_cols = FALSE,
+    show_all = TRUE
+  )
+
+res_lrt_sig <- res_lrt %>%
+  filter(qval <= 1/(10^2))
+```
+
+## [4.4.] Extract data for sigDE genes
+#### according to wald test
+#### check models(sout) for 'which_model' & tests(sout) for 'test'
+#### help page for sleuth_results is not accurately stating this
+#### evaluate 'res_wt_viz %>% group_by(clring) %>% summarise(sum = n())'
+#### previous test: "RasV12"
+```{r}
+res_wt <- sleuth::sleuth_results(
+    obj = sout,
+    which_model = "full",
+    test_type = "wt",
+    test = "RasV12",
+    rename_cols = FALSE,
+    show_all = TRUE,
+    pval_aggregate = FALSE
+  )
+
+res_wt_sig <- res_wt %>%
+  filter(qval <= 1/(10^10)) %>%
+  dplyr::arrange(desc(b))
+```
+
+## [4.5.] Evaluate
+```{r}
+res_wt_sig %>%
+  dplyr::filter(
+      target_id %in% c("Ras85D","Drs")
+    )
+```
+
+## [4.6.] Prepare plotting
+```{r}
+ids <- dplyr::pull(gos_,ensembl_gene_id)
+names <- dplyr::pull(gos_,external_gene_name)
+
+res_wt_viz <- res_wt %>%
+  drop_na() %>%
+  dplyr::mutate(
+    clring = case_when(
+      (
+        (b > 1 | b < (-1)) & (-log10(qval) > 2) &
+        !((ens_gene %in% ids) | (target_id %in% names))
+      ) ~ "sig",
+      ((ens_gene %in% ids) | (target_id %in% names)) ~ "go",
+      TRUE ~ "none"
+    ),
+    clring = factor(
+      clring,
+      levels = c("none","sig","go"),
+      ordered = TRUE
+    )
+  ) %>%
+  arrange(clring)
+```
+
+```{r}
+res_wt_viz %>%
+  dplyr::filter(
+      (target_id %in% names) &
+      (-log10(qval) > 25) |
+      ((b > 3) | (b < -3))
+    )
+```
+
+## [4.7.] Volcano plot
+```{r}
+genes <- c("Ras85D","Drs")
+
+vol <- ggplot(
+    data = res_wt_viz,
+    mapping = aes(
+      x = b,
+      y = -log10(qval),
+      colour = clring,
+      label = target_id
+    )
+  ) +
+  geom_point(
+    alpha = ifelse(res_wt_viz$clring!="go",0.3,0.5)
+  ) +
+  geom_label_repel(
+    data = subset(res_wt_viz,target_id %in% genes)
+  ) +
+  # geom_label_repel(
+  #   data = res_wt_viz %>%
+  #     dplyr::filter(
+  #         (target_id %in% names) &
+  #         ((b > 4) | (b < -2.5) | (-log10(qval) > 25))
+  #       ),
+  #   nudge_x = 12-subset(
+  #     res_wt_viz,
+  #     (target_id %in% names) &
+  #     ((b > 4) | (b < -2.5) | (-log10(qval) > 25))
+  #     )$b,
+  #   directon = "y",
+  #   nudge_y = 0,
+  #   #segment_size = 6,
+  #   colour = "#2d4877"
+  #   ) +
+  geom_hline(
+    yintercept = -log10(0.001),
+    linetype = "dashed"
+  ) +
+  geom_vline(
+    xintercept = 1,
+    linetype = "dashed"
+  ) +
+  geom_vline(
+    xintercept = -1,
+    linetype = "dashed"
+  ) +
+  scale_y_continuous(
+      limits = c(0L,150L),
+      breaks = seq(0,150L,50L),
+      minor_breaks = seq(0,150L,25L)
+    ) +
+  scale_x_continuous(
+      limits = c(-7.5,7.5),
+      breaks = seq(-6,6,3),
+      minor_breaks = seq(-7,7,1)
+    ) +
+  scale_colour_manual(
+    limits = c("none","sig","go"),
+    breaks = c("none","sig","go"),
+    values = c("black","#E69F00","darkblue")
+  )  +
+  theme(
+    aspect.ratio = 1.5,
+    legend.justification = c(0,0),
+    legend.position = "none"
+  )
+print(vol)
+```
+
+#### [4.8.] Save volcano plot
+```{r}
+for(ext in c("pdf", "png")){
+  ggsave(
+    filename = paste0(
+        here("results/20190706_NG8133_RNAseq/"),
+        format(Sys.time(), "%Y%m%d"),
+        "_volcano_lglRNAiRasFM_vs_W1118_waldTest",
+        ".", ext
+        ),
+    plot = vol,
+    device = ext,
+    dpi = 300,
+    width = 4,
+    height = 6
+  )
+}
+```
+
+##------------------------##
+##----GOstats_analysis----##
+##------------------------##
+
+## [5.0.] GO-annotation - Identify all GO-terms in the gene universe (e.g., population)
+#### slots in 'org.Dm.eg.db' package: 'org.Dm.egGO', 'org.Dm.egENSEMBL'
+```{r}
+genes.ensembl <- AnnotationDbi::mappedkeys(
+    x = org.Dm.egENSEMBL2EG
+  )
+genes.entrez <- AnnotationDbi::mappedkeys(
+    x = org.Dm.egENSEMBL
+  )
+```
+
+## [5.1.] Helper function to convert ensembl to entrez IDs
+#### alternative would be AnnotationDbi::mapIds() function
+```{r}
+converter <- function(set, excl=c()){
+    return(
+      AnnotationDbi::select(
+        x = org.Dm.eg.db,
+        keys = set,
+        keytype="ENSEMBL",
+        columns = c(
+          "ENTREZID",
+          "SYMBOL"
+          )
+      ) %>% 
+      tidyr::drop_na() %>%
+      dplyr::filter_all(
+        all_vars(!(. %in% excl))
+      ) %>% 
+      pull("ENTREZID")
+    )
+  }
+```
+
+## [5.2.] Helper function to extract IDs for sigDE ens_gene 
+```{r}
+extractor <- function(con, fil, sig_level, obj = sout, out="ens_gene"){
+    
+    genes_wt <- sleuth::sleuth_results(
+        obj = obj,
+        test = con,
+        test_type = 'wt',
+        which_model = 'full',
+        rename_cols = FALSE,
+        show_all = FALSE,
+        pval_aggregate = FALSE
+      ) %>% 
+      as_tibble %>% 
+      filter(
+        !is.na(pval) &
+        qval < sig_level
+      ) %>%
+      purrr::when(
+        fil=="down" ~ filter(., b < -1),
+        fil=="up" ~ filter(., b > 1),
+        fil=="allDE" ~ filter(., (b > 1 | b < -1)),
+        fil=="sig" ~ filter(.)
+      ) %>%
+      filter(
+        !is.na(out)
+      ) %>% 
+      pull(!!out)
+    
+    return(genes_wt)
+    
+  }
+```
+
+## [5.3.] Apply extractor() & converter()
+```{r}
+cons <- "lglRNAiRasV12_FM" #c("RasV12","lglRNAiRasV12","lglRNAiRasV12_FM")
+fils <- "up" #c("up","down","allDE","sig")
+ont <- "BP" #c("BP", "CC", "MF")
+
+parameters <- tibble::tibble(
+    condition = sort(rep(cons,length(fils)*length(ont))),
+    filter = rep(sort(rep(fils,length(ont))),length(cons)),
+    ontology = rep(ont,length(cons)*length(fils))
+  ) %>%
+  dplyr::mutate(
+    significance = 0.001
+  )
+
+res_genes <- parameters %>%
+  dplyr::mutate(
+    ensembl = purrr::pmap(
+      list(
+        condition,
+        filter,
+        significance
+      ),
+      extractor,
+      obj = sout,
+      out="ens_gene"
+    ),
+    entrez  = purrr::map(
+      ensembl,
+      converter
+    )
+  )
+```
+
+## [5.4.] Parallel implementation of hyperGTest() on all combinations
+#### not working as of yet
+```{r eval=FALSE}
+allGO <- foreach(i=1:nrow(res_genes), .packages = c("GOstats","DOSE")) %dopar% {
+    
+    cur <- res_genes %>%
+      dplyr::filter(row_number() == i)
+  
+    ont <- dplyr::pull(cur,ontology)
+    sig <- dplyr::pull(cur,significance)
+    ens <- dplyr::pull(cur,ensembl) %>% unlist
+    ent <- dplyr::pull(cur,entrez) %>% unlist
+  
+    tmp <- new(
+        'GOHyperGParams',
+        geneIds = ent,
+        universeGeneIds = genes.entrez,
+        ontology = ont,
+        pvalueCutoff = sig,
+        conditional = FALSE,
+        testDirection = 'over',
+        annotation = "org.Dm.eg.db"
+     )
+      
+    out <- hyperGTest(tmp) %>%
+      summary(., pvalue = 1)
+    
+    print(i,nrow(out))
+    
+    return(
+      out %>%
+        dplyr::rename(.,ID=1) %>% 
+        dplyr::mutate(
+          condition = dplyr::pull(cur,condition),
+          filter = dplyr::pull(cur,filter),
+          ontology = ont,
+          significance = sig
+        ) %>%
+        dplyr::select(8:11,1,7,2,5:6,3:4)
+      )
+  }
+```
+
+## [5.5.] Serial implementation of hyperGTest() on all combinations
+```{r}
+allGO <- res_genes %>%
+  dplyr::mutate(
+    go = purrr::pmap(
+      list(
+        entrez,
+        ontology,
+        significance
+      ),
+      function(ent,ont,sig){
+        print(paste(length(ent),ont,sig,sep = " "))
+        tmp <- new(
+            'GOHyperGParams',
+            geneIds = ent,
+            universeGeneIds = genes.entrez,
+            ontology = ont,
+            pvalueCutoff = sig,
+            conditional = FALSE,
+            testDirection = 'over',
+            annotation = "org.Dm.eg.db"
+          )
+
+        out <- hyperGTest(tmp) %>%
+          summary(., pvalue = 1) %>%
+          dplyr::rename(.,ID=1)
+        return(out)
+      }
+    )
+  )
+```
+
+## [5.6.] Combine by unnesting
+```{r}
+allGO_comb <- allGO %>%
+  dplyr::select(-ensembl,-entrez) %>%
+  tidyr::unnest(go)
+```
+
+## [5.7.] Read out patterns for GOs of interest
+```{r}
+patterns <- c(
+    "immune", "defense", "Toll",
+    "ribosome", "salivary", "growth",
+    "death","JNK","JAK"
+  )
+
+allGO_comb %>%
+  dplyr::select(1:4,11,5:10) %>% 
+  dplyr::filter(
+    grepl(str_c(patterns,collapse = "|"),Term) &
+    filter == "up"
+  )
+```
+
+## [5.8] clusterProfiler::enrichGO() as alternative to GOstats::hyperGTest()
+```{r eval=FALSE}
+en <- clusterProfiler::enrichGO(
+  gene = res_genes$entrez[[9]],
+  OrgDb = org.Dm.eg.db,
+  keyType = "ENTREZID",
+  ont = "ALL",
+  universe = genes.entrez,
+  pvalueCutoff = 1,
+  qvalueCutoff = 1,
+  pAdjustMethod = "bonferroni",
+  pool = TRUE
+)
+en@result %>%
+  dplyr::filter(
+    grepl('salivary',Description)
+  )
+```
+
+##-------------------------##
+##----Combined_workflow----##
+##-------------------------##
+
+## [6.0.] Helper function for complete workflow
+```{r}
+combiner <- function(goi, ctrl = "w1118", fils = "up", ont = "BP"){
+
+  full_design <- designer(goi,ctrl)
+  design_overview <- sample_overview %>%
+        dplyr::filter(condition %in% c(goi,ctrl))
+  
+  sout <- sleuth::sleuth_prep(
+      sample_to_covariates = design_overview,
+      full_model = full_design,
+      target_mapping = dm6,
+      aggregation_column = 'ext_gene',
+      extra_bootstrap_summary = TRUE,
+      gene_mode = TRUE
+    )
+  
+  ##Fitting
+  sout <- sleuth::sleuth_fit(
+    obj = sout,
+    fit_name = "full"
+    )
+  sout <- sleuth::sleuth_fit(
+      obj = sout,
+      formula = ~1,
+      fit_name = "reduced"
+    )
+  
+  ##Statistics
+  sout <- sleuth::sleuth_lrt(
+      obj = sout,
+      null_model = "reduced",
+      alt_model = "full"
+    )
+  sout <- sleuth::sleuth_wt(
+      obj = sout,
+      which_beta = goi,
+      which_model = 'full'
+    )
+  
+  ##PrepareGO
+  parameters <- tibble::tibble(
+      condition = sort(rep(goi,length(fils)*length(ont))),
+      filter = rep(sort(rep(fils,length(ont))),length(goi)),
+      ontology = rep(ont,length(goi)*length(fils))
+    ) %>%
+    dplyr::mutate(
+      significance = 0.001
+    )
+  res_genes <- parameters %>%
+    dplyr::mutate(
+      ensembl = purrr::pmap(
+        list(
+          condition,
+          filter,
+          significance
+        ),
+        extractor,
+        obj = sout,
+        out="ens_gene"
+      ),
+      entrez  = purrr::map(
+        ensembl,
+        converter
+      )
+    )
+  
+  ##GOanalysis
+  allGO <- res_genes %>%
+    dplyr::mutate(
+      go = purrr::pmap(
+        list(
+          entrez,
+          ontology,
+          significance
+        ),
+        function(ent,ont,sig){
+          print(paste(length(ent),ont,sig,sep = " "))
+          tmp <- new(
+              'GOHyperGParams',
+              geneIds = ent,
+              universeGeneIds = genes.entrez,
+              ontology = ont,
+              pvalueCutoff = sig,
+              conditional = FALSE,
+              testDirection = 'over',
+              annotation = "org.Dm.eg.db"
+            )
+  
+          out <- hyperGTest(tmp) %>%
+            summary(., pvalue = 1) %>%
+            dplyr::rename(.,ID=1)
+          return(out)
+        }
+      )
+    )
+    return(allGO)
+  }
+```
+
+## [6.1.] Apply combiner() to all three experimental groups
+```{r}
+GOI <- c("RasV12","lglRNAiRasV12","lglRNAiRasV12_FM")
+
+allGO <- map(
+    GOI,
+    combiner
+  )
+```
+
+## [6.2.1.] Read out patterns for terms of interest
+```{r}
+patterns <- c(
+    "immune", "defense", "Toll",
+    "ribosome", "salivary", "growth",
+    "death","JNK","JAK"
+  )
+
+subGO <- allGO %>%
+  dplyr::bind_rows() %>%
+  dplyr::select(-ensembl,-entrez) %>%
+  tidyr::unnest(go) %>%
+  dplyr::filter(
+    grepl(str_c(patterns,collapse = "|"),Term)
+  ) %>%
+  dplyr::select(1,5,11,6:10,2:4)
+```
+
+## [6.2.2.] Read out patterns for GOs of interest
+```{r}
+gos <- c(
+    "GO:0042254","GO:0007431","GO:0007435",
+    "GO:0035070","GO:0007173","GO:0042058",
+    "GO:0045742","GO:0042059","GO:0040007",
+    "GO:0016049","GO:0040008","GO:0048589",
+    "GO:0048638","GO:0008219","GO:0010941",
+    "GO:0012501","GO:0043067","GO:0043068",
+    "GO:0006952","GO:0006955","GO:0050776",
+    "GO:0002376","GO:0002682","GO:0045087",
+    "GO:0006959","GO:0002251","GO:0008063",
+    "GO:0008592","GO:0045751","GO:0007254",
+    "GO:0046328","GO:0046330","GO:0046329",
+    "GO:0007256"
+    #"GO:0007259","GO:0046426","GO:0046425",
+    #"GO:0071559"
+  )
+
+subGO <- allGO %>%
+  dplyr::bind_rows() %>%
+  dplyr::select(-ensembl,-entrez) %>%
+  tidyr::unnest(go) %>%
+  dplyr::filter(
+    ID %in% gos
+  ) %>%
+  dplyr::select(1,5,11,6:10,2:4) %>%
+  dplyr::mutate(
+    ID = factor(
+        ID,
+        levels = gos,
+        ordered = TRUE
+      )
+    ) %>%
+  arrange(condition,ID)
+```
+
+## [6.3.] Prepare plotting
+```{r}
+terms <- subGO %>%
+  dplyr::filter(condition == "RasV12") %>%
+  dplyr::mutate(
+    Term = str_replace(
+        Term,
+        'epidermal growth factor receptor',
+        'EGFR'
+      )
+  ) %>%
+  pull(Term)
+
+vizGO <- subGO %>%
+  dplyr::mutate(
+    Term = str_replace(
+        Term,
+        'epidermal growth factor receptor',
+        'EGFR'
+      ),
+    Term = factor(
+      Term,
+      levels = rev(terms),
+      ordered = TRUE
+    ),
+    condition = factor(
+      condition,
+      levels = GOI,
+      ordered = TRUE
+    ),
+    clring = case_when(
+      grepl('immune|defense',Term) ~ "immune",
+      grepl('JNK',Term) ~ "JNK",
+      TRUE ~ "rest"
+    )
+  )
+```
+
+## [6.4.] Visualize
+```{r fig.height=5,fig.width=10}
+bar <- ggplot(
+    data = vizGO,
+    mapping = aes(
+      x = Term,
+      y = -log10(Pvalue),
+      fill = clring,
+      label = Count
+    )
+  ) +
+  geom_bar(
+    stat = "identity",
+    colour = "black",
+    width = 0.8
+  ) +
+  geom_text(
+    position = position_stack(0.8),
+    size = 2,
+    fontface = "bold",
+    colour = ifelse(rev(vizGO$clring)=="rest", "black","white")
+  ) +
+  geom_hline(
+    yintercept = -log10(0.01),
+    linetype = "dashed"
+  ) +
+  coord_flip() +
+  facet_wrap(
+    condition ~ .,
+    nrow = 1
+  ) +
+  scale_y_continuous(
+    limits = c(0,10),
+    breaks = c(0,3,6,9),
+    minor_breaks = seq(0,10,1)
+  ) +
+  scale_fill_manual(
+    limits = c("immune","JNK","rest"),
+    breaks = c("immune","JNK","rest"),
+    values = c("darkred","darkgreen","grey75")
+  ) +
+  theme(
+    axis.title.y = element_blank(),
+    legend.position = "none"
+  )
+print(bar)
+```
+
+#### [6.5.] Save barplot
+```{r}
+for(ext in c("pdf", "png")){
+  ggsave(
+    filename = paste0(
+        here("results/20190706_NG8133_RNAseq/"),
+        format(Sys.time(), "%Y%m%d"),
+        "_barplot_GOIs",
+        ".", ext
+        ),
+    plot = bar,
+    device = ext,
+    dpi = 300,
+    width = 7,
+    height = 7*(3/4)
+  )
+}
+```
+
+##------------------------------##
+##----Immune_gene_expression----##
+##------------------------------##
+
+## [7.0.] Apply extractor() & converter()
+```{r}
+cons <- "lglRNAiRasV12_FM"
+fils <- "up"
+ont <- "BP"
+
+parameters <- tibble::tibble(
+    condition = sort(rep(cons,length(fils)*length(ont))),
+    filter = rep(sort(rep(fils,length(ont))),length(cons)),
+    ontology = rep(ont,length(cons)*length(fils))
+  ) %>%
+  dplyr::mutate(
+    significance = 0.001
+  )
+
+res_genes <- parameters %>%
+  dplyr::mutate(
+    ensembl = purrr::pmap(
+      list(
+        condition,
+        filter,
+        significance
+      ),
+      extractor,
+      obj = sout,
+      out="ens_gene"
+    ),
+    entrez  = purrr::map(
+      ensembl,
+      converter
+    )
+  )
+```
+
+## [7.1.] Read out genes belonging to "GO:0006955"
+```{r}
+tmp <- new(
+    'GOHyperGParams',
+    geneIds = res_genes$entrez,
+    universeGeneIds = genes.entrez,
+    ontology = res_genes$ontology,
+    pvalueCutoff = res_genes$significance,
+    conditional = FALSE,
+    testDirection = 'over',
+    annotation = "org.Dm.eg.db"
+  )
+out <- hyperGTest(tmp)
+```
+
+## [7.2.] Convert gene IDs
+```{r}
+ents <- Category::geneIdsByCategory(
+    r = out,
+    catids = "GO:0006955"
+  ) %>%
+  unlist %>%
+  unname
+genes.immune <- AnnotationDbi::select(
+  x = org.Dm.eg.db,
+  keys = ents,
+  keytype="ENTREZID",
+  columns = c(
+    "ENSEMBL", "SYMBOL"
+    )
+  ) %>%
+  dplyr::distinct(
+      SYMBOL, .keep_all = TRUE
+    )
+```
+
+## [7.3.] Helper function for complete workflow
+```{r}
+resulter <- function(goi, ctrl = "w1118", fils = "up", ont = "BP"){
+
+  full_design <- designer(goi,ctrl)
+  design_overview <- sample_overview %>%
+        dplyr::filter(condition %in% c(goi,ctrl))
+  
+  sout <- sleuth::sleuth_prep(
+      sample_to_covariates = design_overview,
+      full_model = full_design,
+      target_mapping = dm6,
+      aggregation_column = 'ext_gene',
+      extra_bootstrap_summary = TRUE,
+      gene_mode = TRUE
+    )
+  
+  ##Fitting
+  sout <- sleuth::sleuth_fit(
+      obj = sout,
+      fit_name = "full"
+    )
+  sout <- sleuth::sleuth_fit(
+      obj = sout,
+      formula = ~1,
+      fit_name = "reduced"
+    )
+  
+  ##Statistics
+  sout <- sleuth::sleuth_lrt(
+      obj = sout,
+      null_model = "reduced",
+      alt_model = "full"
+    )
+  sout <- sleuth::sleuth_wt(
+      obj = sout,
+      which_beta = goi,
+      which_model = 'full'
+    )
+  
+  ##Read out results
+  res_wt <- sleuth::sleuth_results(
+      obj = sout,
+      which_model = "full",
+      test_type = "wt",
+      test = goi,
+      rename_cols = FALSE,
+      show_all = TRUE,
+      pval_aggregate = FALSE
+    )
+  
+  return(
+    res_wt %>%
+      dplyr::mutate(
+        profile = goi
+      )
+  )
+}
+```
+
+## [7.4.] Apply combiner() to all three experimental groups
+```{r}
+GOI <- c("RasV12","lglRNAiRasV12","lglRNAiRasV12_FM")
+
+res_all <- purrr::map_dfr(
+    .x = GOI,
+    .f = resulter
+  )
+```
+
+## [7.5.] Subset res_all for immune genes of "GO:0006955"
+```{r}
+ GOI <- c("RasV12","lglRNAiRasV12","lglRNAiRasV12_FM")
+
+order <- res_all %>%
+  dplyr::filter(
+    ens_gene %in% genes.immune$ENSEMBL |
+    target_id %in% genes.immune$SYMBOL
+  ) %>%
+  dplyr::arrange(desc(b)) %>%
+  dplyr::distinct(target_id) %>%
+  dplyr::pull(target_id)
+
+res_all_viz <- res_all %>%
+  dplyr::filter(
+    ens_gene %in% genes.immune$ENSEMBL |
+    target_id %in% genes.immune$SYMBOL
+  ) %>%
+  dplyr::mutate(
+    profile = factor(
+      profile,
+      levels = GOI,
+      ordered = TRUE
+    )
+  )
+```
+
+## [7.6.] Visualize expression accross all 3 experimental groups
+```{r}
+imm <- ggplot(
+    data = res_all_viz,
+    mapping = aes(
+      x = target_id,
+      y = b,
+      fill = profile
+    )
+  ) +
+  geom_bar(
+      stat = "identity",
+      position = "dodge",
+      colour = "black",
+      width = 0.8
+    ) +
+  geom_hline(
+    yintercept = 1,
+    linetype = "dashed"
+  ) +
+  coord_flip() +
+  scale_x_discrete(
+      limits = rev(order),
+      breaks = rev(order)
+    ) +
+  scale_fill_manual(
+      limits = c("RasV12","lglRNAiRasV12","lglRNAiRasV12_FM"),
+      breaks = c("RasV12","lglRNAiRasV12","lglRNAiRasV12_FM"),
+      values = c("white","grey75","#2d4877")
+    ) +
+  theme(
+    aspect.ratio = 2L,
+    axis.title = element_blank(),
+    legend.background = element_rect(
+      fill = "grey75"
+    ),
+    legend.title = element_blank(),
+    legend.text = element_text(
+      size = 7
+    ),
+    legend.key.size = unit(0.5,"cm"),
+    legend.justification = c(1,0),
+    legend.position = c(0.95,0.025)
+  )
+plot(imm)
+```
+
+#### [7.7.] Save barplot
+```{r}
+for(ext in c("pdf", "png")){
+  ggsave(
+    filename = paste0(
+        here("results/20190706_NG8133_RNAseq/"),
+        format(Sys.time(), "%Y%m%d"),
+        "_lglRNAiRasV12_FM_genes.immune",
+        ".", ext
+        ),
+    plot = imm,
+    device = ext,
+    dpi = 300L,
+    width = 4L,
+    height = 6L
+  )
+}
+```
+
+##--------------------------------##
+##----Comparison_of_conditions----##
+##--------------------------------##
+
+## [8.0.] Read out all sigDE upregulated genes from 3 conditions
+```{r}
+tmp <- res_all %>%
+  dplyr::filter(
+    #(qval < 0.001 & b < -1) |
+    (qval < 0.001 & b > 1)
+  ) %>%
+  dplyr::group_by(profile) %>%
+  nest %>%
+  dplyr::mutate(
+    genes = purrr::map(
+        data,
+      function(x){
+        return(
+          x %>%
+            dplyr::distinct(target_id) %>%
+            dplyr::pull(target_id)
+        )
+      }
+    )
+  ) %>%
+  dplyr::select(-data)
+
+res_list <- tmp %>%
+  dplyr::select(genes) %>%
+  as.list
+res_list <- res_list$genes
+names(res_list) <- dplyr::pull(tmp,profile)
+str(res_list)
+```
+
+## [8.1.] Run UpsetR
+```{r}
+UpSetR::upset(
+    data = UpSetR::fromList(res_list),
+    order.by = "freq"
+  )
+```
+
+#### [7.7.] Save upseter plot
+```{r}
+pdf(
+  file = paste0(
+      here("results/20190706_NG8133_RNAseq/"),
+      format(Sys.time(), "%Y%m%d"),
+      "_upset_intersectConditions",
+      ".pdf"
+    ),
+  onefile = TRUE,
+  width = 6L,
+  height = 4L,
+  useDingbats = TRUE,
+  pointsize = 12
+  )
+UpSetR::upset(
+    data = UpSetR::fromList(res_list),
+    order.by = "freq"
+  )
+dev.off()
+```
+
+##----------------------------------------##
+##----Explore_intersection/differences----##
+##----------------------------------------##
+
+## [8.2.] Identify lglRNAiRasV12_FM specific genes & convert 
+```{r}
+conds.inter <- dplyr::intersect(
+    x = res_list$lglRNAiRasV12_FM,
+    y = res_list$lglRNAiRasV12
+  ) %>%
+  dplyr::intersect(
+      x = .,
+      y = res_list$RasV12
+    )
+
+conds.inter <- dplyr::intersect(
+    x = res_list$RasV12,
+    y = res_list$lglRNAiRasV12
+  )
+
+genes.inter <- AnnotationDbi::select(
+  x = org.Dm.eg.db,
+  keys = conds.inter,
+  keytype="SYMBOL",
+  columns = c(
+    "ENSEMBL", "ENTREZID"
+    )
+  ) %>%
+  dplyr::distinct(
+      SYMBOL, .keep_all = TRUE
+    )
+```
+
+## [8.3.] Perform GO term enrichment
+```{r}
+tmp <- new(
+    'GOHyperGParams',
+    geneIds = genes.inter$ENTREZID,
+    universeGeneIds = genes.entrez,
+    ontology = "BP",
+    pvalueCutoff = 0.001,
+    conditional = FALSE,
+    testDirection = 'over',
+    annotation = "org.Dm.eg.db"
+  )
+out <- hyperGTest(tmp)
+```
+
+## [8.4.] Read out results for "GO:0006955"
+```{r}
+out %>% 
+  summary(., pvalue = 1) %>%
+  dplyr::filter(GOBPID %in% c("GO:0006955","GO:0007254"))
+```
+
+## [8.5.] Convert gene IDs
+```{r}
+ents <- Category::geneIdsByCategory(
+    r = out,
+    catids = "GO:0006955"
+  ) %>%
+  unlist %>%
+  unname
+genes.inter.immune <- AnnotationDbi::select(
+  x = org.Dm.eg.db,
+  keys = ents,
+  keytype="ENTREZID",
+  columns = c(
+    "ENSEMBL", "SYMBOL"
+    )
+  ) %>%
+  dplyr::distinct(
+      SYMBOL, .keep_all = TRUE
+    )
+```
+
