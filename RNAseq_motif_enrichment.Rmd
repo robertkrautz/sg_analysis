@@ -1,0 +1,92 @@
+---
+title: "RNAseq_motif_enrichment.Rmd"
+author: "R.Krautz"
+date: "22/10/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## [0.0.] Load necessary packages
+```{r message=FALSE}
+library(here)
+library(tidyverse)
+library(ggrepel)
+library(ggrastr)
+library(UpSetR)
+
+library(org.Dm.eg.db)
+library(sleuth)
+library(GOstats)
+library(clusterProfiler)
+library(biomaRt)
+library(ChIPpeakAnno)
+library(PWMEnrich)
+library(PWMEnrich.Dmelanogaster.background)
+library(seqinr)
+library(BSgenome)
+library(BSgenome.Dmelanogaster.UCSC.dm6)
+library(universalmotif)
+library(RcisTarget)
+
+library(doParallel)
+library(foreach)
+registerDoParallel(cores=60)
+```
+
+##---------------------##
+##----Prerequisites----##
+##---------------------##
+
+## [1.0.] Load res_all
+#### see [7.7.] of 'RNAseq_sg_analysis.Rmd'
+```{r}
+res_all <- base::readRDS(
+  file = base::list.files(
+      path = here::here(),
+      full.names = TRUE
+    ) %>%
+    stringr::str_subset("res_all")
+  )
+```
+
+## [1.1.] Set mart
+```{r}
+pattern = "melanogaster"
+
+ensembl <- biomaRt::useMart(
+    biomart = "ENSEMBL_MART_ENSEMBL",
+    host = "www.ensembl.org",
+    verbose = TRUE
+  )
+
+dataset_ <- biomaRt::listDatasets(
+    mart = ensembl,
+    verbose = TRUE
+  ) %>%
+  dplyr::filter(
+    grepl(pattern,dataset)
+  ) %>%
+  dplyr::pull(dataset)
+
+ensembl <- biomaRt::useDataset(
+    dataset = dataset_,
+    mart = ensembl,
+    verbose = TRUE
+  )
+```
+
+## [1.2.] Colors
+```{r}
+cols3 <- base::c(
+    "#ED4938","#ADC607","#F4C10D",
+    "#333136","#161474","#7B3DBA",
+    "#03CEC2","#2AB348","#EDA838",
+    "#7297C7","#EB373C","#FFE45F",
+    "#ED9038","#000000","#801515",
+    "#A75486"
+  )
+```
+

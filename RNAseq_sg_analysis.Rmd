@@ -1282,6 +1282,31 @@ imm <- ggplot(
 plot(imm)
 ```
 
+## [7.7.] Save & load res_all
+#### necessary for 'RNAseq_motif_enrichment.Rmd'
+```{r}
+base::saveRDS(
+    object = res_all,
+    file = base::paste0(
+        here::here(),
+        base::format(base::Sys.time(), "%Y%m%d"),
+        "_res_all",
+        ".rds"
+      ),
+    compress = TRUE
+  )
+```
+
+```{r}
+res_all <- base::readRDS(
+  file = base::list.files(
+      path = here::here(),
+      full.names = TRUE
+    ) %>%
+    stringr::str_subset("res_all")
+  )
+```
+
 ##--------------------------------##
 ##----Comparison_of_conditions----##
 ##--------------------------------##
