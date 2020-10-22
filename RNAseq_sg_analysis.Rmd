@@ -163,6 +163,37 @@ allGO <- AnnotationDbi::select(
   dplyr::distinct(SYMBOL, .keep_all=TRUE)
 ```
 
+## [1.6.] Subset biomart gene list for known AMPs
+```{r}
+amps <- base::c(
+    "Dro","Drs","AttA",
+    "AttB","Def","AttC",
+    "Mtk","DptA","DptB",
+    "AttD","CecA1", "DptC"
+  )
+
+amps_bm <- gos_ %>%
+  dplyr::filter(
+      `Gene name` %in% amps |
+      grepl('^IM\\d',`Gene name`)
+    )
+```
+
+## [1.7.] Identify AMP entrez gene IDs
+```{r}
+genes.amps <- AnnotationDbi::select(
+  x = org.Dm.eg.db,
+  keys = amps_bm$`Gene stable ID`,
+  keytype  = "ENSEMBL",
+  columns = base::c(
+    "ENTREZID", "SYMBOL"
+    )
+  ) %>%
+  dplyr::distinct(
+      SYMBOL, .keep_all = TRUE
+    )
+```
+
 ##--------------------##
 ##----Run_kallisto----##
 ##--------------------##
@@ -1151,7 +1182,7 @@ res_all <- purrr::map_dfr(
   )
 ```
 
-## [7.5.] Subset res_all for immune genes of "GO:0006955"
+## [7.5.1.] Subset res_all for immune genes of "GO:0006955"
 ```{r}
  GOI <- c("RasV12","lglRNAiRasV12","lglRNAiRasV12_FM")
 
@@ -1178,7 +1209,33 @@ res_all_viz <- res_all %>%
   )
 ```
 
+## [7.5.2.] Subset res_all for AMPs
+```{r}
+order <- res_all %>%
+  dplyr::filter(
+    ens_gene %in% genes.amps$ENSEMBL |
+    target_id %in% genes.amps$SYMBOL
+  ) %>%
+  dplyr::arrange(desc(b)) %>%
+  dplyr::distinct(target_id) %>%
+  dplyr::pull(target_id)
+
+res_all_viz <- res_all %>%
+  dplyr::filter(
+    ens_gene %in% genes.amps$ENSEMBL |
+    target_id %in% genes.amps$SYMBOL
+  ) %>%
+  dplyr::mutate(
+    profile = factor(
+      profile,
+      levels = GOI,
+      ordered = TRUE
+    )
+  )
+```
+
 ## [7.6.] Visualize expression accross all 3 experimental groups
+#### either for "GO:0006955"-immune genes [7.5.1.] or AMPs [7.5.2.]
 ```{r}
 imm <- ggplot(
     data = res_all_viz,
@@ -1342,4 +1399,79 @@ genes.inter.immune <- AnnotationDbi::select(
   dplyr::distinct(
       SYMBOL, .keep_all = TRUE
     )
+```
+
+##----------------##
+##----Puc_plot----##
+##----------------##
+
+## [9.0.] Subset data for puckered
+```{r}
+genos <- base::c(
+    "RasV12", "lglRNAiRasV12",
+    "lglRNAiRasV12_FM"
+  )
+cur_gene = "grnd|wgn|egr"
+
+subset <- res_all %>%
+  dplyr::filter(
+    base::grepl(
+      pattern = cur_gene,
+      x = target_id,
+      ignore.case = TRUE
+    )
+  ) %>%
+  dplyr::mutate(
+    source = "Krautz R et al., 2020",
+    profile = base::factor(
+      x = profile,
+      levels = genos,
+      ordered = TRUE
+    )
+  )
+```
+
+## [9.1.] Plot subset
+```{r}
+plot <- ggplot(
+    data = subset,
+    mapping = aes(
+      y = 2^b,
+      x = profile,
+      fill = profile
+    )
+  ) +
+  geom_bar(
+    stat = "identity",
+    color = "black",
+    width = 0.8
+  ) +
+  geom_text(
+    mapping = aes(
+      label = qval
+    ),
+    angle = 90,
+    hjust = -0.1,
+    size = 4
+  ) +
+  facet_wrap(
+    facets = target_id ~ source,
+    nrow = 1
+  ) +
+  scale_fill_manual(
+    breaks = base::c("RasV12","lglRNAiRasV12","lglRNAiRasV12_FM"),
+    values = base::c("#21908c","#fde725","#2d4877")
+  ) + 
+  scale_y_continuous(
+      name = "Fold-change",
+      limits = c(0,3.5)
+    ) +
+  theme(
+    aspect.ratio = 5L,
+    axis.text.x = element_blank(),
+    strip.placement = "outside",
+    axis.title = element_blank(),
+    legend.position = "none"
+  )
+base::print(plot)
 ```
