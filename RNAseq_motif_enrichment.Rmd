@@ -90,6 +90,151 @@ cols3 <- base::c(
   )
 ```
 
+##------------------------------------##
+##----Comparison_of_conditions_all----##
+##------------------------------------##
+
+## [3.0.] Automated read-out of gene lists
+#### across several genotypes & expression directions
+```{r}
+genos_ <- res_all %>%
+  dplyr::distinct(profile) %>%
+  dplyr::pull(profile)
+
+direc_ <- base::c("up","down")
+
+options <- tibble::tibble(
+    genos = base::rep(genos_,base::length(direc_)),
+    direc = base::sort(base::rep(direc_,base::length(genos_)))
+  )
+
+res_genos <- options %>%
+  dplyr::mutate(
+    genes = purrr::pmap(
+      .l = base::list(
+          genos,
+          direc
+        ),
+      .f = function(g,d){
+        if(d=="up"){
+          tmp <- res_all %>%
+            dplyr::filter(
+                (qval < 0.001 & b > 1)
+              )
+        } else {
+          tmp <- res_all %>%
+            dplyr::filter(
+                (qval < 0.001 & b < -1)
+              )
+        }
+        return(
+          tmp %>%
+            dplyr::filter(
+                profile == g
+              ) %>%
+            dplyr::distinct(target_id) %>%
+            dplyr::pull(target_id)
+          )
+        }
+      )
+    )
+```
+
+## [3.1.] Convert into list
+```{r}
+res_list <- res_genos %>%
+  dplyr::select(genes) %>%
+  base::as.list()
+
+res_list <- res_list$genes
+base::names(res_list) <- res_genos %>%
+  dplyr::mutate(
+    set = str_c(genos,direc,sep="_")
+  ) %>% 
+  dplyr::pull(set)
+utils::str(res_list)
+```
+
+## [3.2.] Read out all gene occurences
+```{r}
+tmp <- res_genos %>%
+  tidyr::unnest(genes) %>%
+  dplyr::distinct(genes)
+
+for(i in 1:base::nrow(options)){
+    
+  name <- stringr::str_c(
+      res_genos$genos[i],
+      res_genos$direc[i],
+      sep="_"
+    )
+  tmp <- tmp %>%
+    dplyr::mutate(
+      !!name := purrr::map_chr(
+        .x = genes,
+        .f = function(g){
+          #cat("\t",g,"\n")
+          return(
+            base::ifelse(
+              g %in% res_genos$genes[[i]],1L,0L
+            )
+          )
+        }
+      )
+    )
+  }
+res_distr <- tmp
+```
+
+## [3.3.] Summarise distributions
+```{r}
+cols <- res_distr %>%
+  dplyr::select(-genes) %>%
+  base::colnames()
+
+res_distr_sum <- res_distr %>%
+  dplyr::group_by_at(cols) %>%
+  dplyr::summarise(
+      n = dplyr::n(),
+      g = str_c(genes,collapse = ";")
+    )
+```
+
+## [3.4.] Insert other combinations into res_list
+```{r}
+res_list[["RasV12lglRNAiRasV12_down_incl"]] <- res_distr %>%
+  dplyr::filter(
+      RasV12_down == 1L &
+      lglRNAiRasV12_down == 1L
+    ) %>%
+  dplyr::pull(genes)
+
+res_list[["RasV12lglRNAiRasV12_up_incl"]] <- res_distr %>%
+  dplyr::filter(
+      RasV12_up == 1L &
+      lglRNAiRasV12_up == 1L
+    ) %>%
+  dplyr::pull(genes)
+
+res_list[["lglRNAiRasV12_FM_down_excl"]] <- res_distr %>%
+  dplyr::filter(
+      RasV12_down == 0L &
+      lglRNAiRasV12_down == 0L &
+      lglRNAiRasV12_FM_down == 1L
+    ) %>%
+  dplyr::pull(genes)
+
+res_list[["lglRNAiRasV12_FM_up_excl"]] <- res_distr %>%
+  dplyr::filter(
+      RasV12_up == 0L &
+      lglRNAiRasV12_up == 0L &
+      lglRNAiRasV12_FM_up == 1L
+    ) %>%
+  dplyr::pull(genes)
+
+utils::str(res_list)
+```
+
 ##------------------##
 ##----RcisTarget----##
 ##------------------##
