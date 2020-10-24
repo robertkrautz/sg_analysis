@@ -404,3 +404,109 @@ plot_Rcis <- ggplot2::ggplot(
   )
 base::print(plot_Rcis)
 ```
+
+##------------------------------##
+##----Background_frequencies----##
+##------------------------------##
+
+## [4.0.] Helper function for reading in genome
+```{r}
+processFile = function(filepath, nucl = base::c("A","G","C","T","N")) {
+    chrom = NA
+    genome = base::list()
+    con = base::file(
+        description = filepath,
+        open = "r"
+      )
+    while(TRUE){
+      line = base::readLines(con, n = 1)
+      if(base::length(line) == 0) {
+          genome[[chrom]] = counts
+          break
+        }
+      if(base::grepl("^>.*",line)){
+        
+        if(!is.na(chrom)){
+            genome[[chrom]] = counts
+          }
+        
+        chrom = stringr::str_replace(
+            string = line,
+            pattern = "^>(.*?)$",
+            replacement = "\\1"
+          )
+        #sequen = base::as.character()
+        counts = base::c(0L,0L,0L,0L,0L)
+        
+      } else {
+        #sequen = base::c(sequen,line)
+        counts = purrr::modify2(
+          .x = nucl,
+          .y = counts,
+          .f = function(N,C){
+                base::as.integer(C) + stringr::str_count(line,N)
+              }
+          )
+        }
+      }
+    base::close(con)
+    
+    return(genome)
+  }
+```
+
+## [4.1.] Read in dm6 genome
+#### acquire 'Drosophila_melanogaster.BDGP6.28.dna.toplevel.fa'
+#### on 'http://www.ensembl.org/Drosophila_melanogaster/Info/Index'
+```{r}
+file = base::paste0(
+    here::here("data/20190706_NG8133_RNAseq/"),
+    "Drosophila_melanogaster.BDGP6.28.dna.toplevel.fa"
+  )
+
+nucleotides = base::c("A","G","C","T","N")
+dm6 <-  .GlobalEnv$processFile(
+    filepath = file,
+    nucl = nucleotides
+  )
+```
+
+## [4.2.] Data wrangling
+#### tmp <- base::lapply(dm6, as.integer)
+#### row_sums <- base::lapply(tmp,sum)
+```{r}
+tmp <- dplyr::as_tibble(dm6) %>%
+  base::t()
+base::colnames(tmp) <- nucleotides
+tmp_df <- base::as.data.frame(tmp)
+tmp_tbl <- tibble::rownames_to_column(tmp_df,"chr")
+
+tbl_long <- tmp_tbl %>%
+  tidyr::gather(
+      key = "nucl",
+      value = "count",
+      -chr
+    ) %>%
+  dplyr::mutate(
+    count = base::as.integer(count)
+  )
+```
+
+## [4.3.] Calculate background frequencies
+```{r}
+totSum <- tbl_long %>%
+  dplyr::summarise(sum = sum(count)) %>% 
+  dplyr::pull(sum)
+
+gatc.freq <- tbl_long %>%
+  dplyr::filter(nucl != "N") %>% 
+  dplyr::group_by(nucl) %>% 
+  dplyr::summarise(absSum = sum(count)) %>%
+  dplyr::mutate(
+      relSum = absSum/totSum
+    ) %>%
+  dplyr::pull(relSum)
+
+base::names(gatc.freq) <- c("A","C","G","T")
+```
+
