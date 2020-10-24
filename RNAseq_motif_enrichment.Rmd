@@ -90,11 +90,11 @@ cols3 <- base::c(
   )
 ```
 
-##------------------------------------##
-##----Comparison_of_conditions_all----##
-##------------------------------------##
+##-------------------------##
+##----Read_out_genesets----##
+##-------------------------##
 
-## [3.0.] Automated read-out of gene lists
+## [2.0.] Automated read-out of gene lists
 #### across several genotypes & expression directions
 ```{r}
 genos_ <- res_all %>%
@@ -140,7 +140,7 @@ res_genos <- options %>%
     )
 ```
 
-## [3.1.] Convert into list
+## [2.1.] Convert into list
 ```{r}
 res_list <- res_genos %>%
   dplyr::select(genes) %>%
@@ -155,92 +155,11 @@ base::names(res_list) <- res_genos %>%
 utils::str(res_list)
 ```
 
-## [3.2.] Read out all gene occurences
-```{r}
-tmp <- res_genos %>%
-  tidyr::unnest(genes) %>%
-  dplyr::distinct(genes)
-
-for(i in 1:base::nrow(options)){
-    
-  name <- stringr::str_c(
-      res_genos$genos[i],
-      res_genos$direc[i],
-      sep="_"
-    )
-  tmp <- tmp %>%
-    dplyr::mutate(
-      !!name := purrr::map_chr(
-        .x = genes,
-        .f = function(g){
-          #cat("\t",g,"\n")
-          return(
-            base::ifelse(
-              g %in% res_genos$genes[[i]],1L,0L
-            )
-          )
-        }
-      )
-    )
-  }
-res_distr <- tmp
-```
-
-## [3.3.] Summarise distributions
-```{r}
-cols <- res_distr %>%
-  dplyr::select(-genes) %>%
-  base::colnames()
-
-res_distr_sum <- res_distr %>%
-  dplyr::group_by_at(cols) %>%
-  dplyr::summarise(
-      n = dplyr::n(),
-      g = str_c(genes,collapse = ";")
-    )
-```
-
-## [3.4.] Insert other combinations into res_list
-```{r}
-res_list[["RasV12lglRNAiRasV12_down_incl"]] <- res_distr %>%
-  dplyr::filter(
-      RasV12_down == 1L &
-      lglRNAiRasV12_down == 1L
-    ) %>%
-  dplyr::pull(genes)
-
-res_list[["RasV12lglRNAiRasV12_up_incl"]] <- res_distr %>%
-  dplyr::filter(
-      RasV12_up == 1L &
-      lglRNAiRasV12_up == 1L
-    ) %>%
-  dplyr::pull(genes)
-
-res_list[["lglRNAiRasV12_FM_down_excl"]] <- res_distr %>%
-  dplyr::filter(
-      RasV12_down == 0L &
-      lglRNAiRasV12_down == 0L &
-      lglRNAiRasV12_FM_down == 1L
-    ) %>%
-  dplyr::pull(genes)
-
-res_list[["lglRNAiRasV12_FM_up_excl"]] <- res_distr %>%
-  dplyr::filter(
-      RasV12_up == 0L &
-      lglRNAiRasV12_up == 0L &
-      lglRNAiRasV12_FM_up == 1L
-    ) %>%
-  dplyr::pull(genes)
-
-utils::str(res_list)
-```
-
 ##------------------##
 ##----RcisTarget----##
 ##------------------##
 
-## [12.0.] Download dm6 database
-#### see '[1.1.]' in '20190124_workflow_SCENIC.Rmd' [NanoDam]
+## [3.0.] Download dm6 database
 ```{r}
 dbFile <- base::paste0(
     "https://resources.aertslab.org/cistarget/databases/",
@@ -251,7 +170,7 @@ checksums <- base::paste0(
     "https://resources.aertslab.org/cistarget/databases/",
     "sha256sum.txt"
   )
-dest.dir <- here::here("data/20190706_NG8133_RNAseq/")
+dest.dir <- here::here()
 
 if(base::dir.exists(dest.dir)){
     utils::download.file(
@@ -272,48 +191,28 @@ if(base::dir.exists(dest.dir)){
   }
 ```
 
-## [12.1.] Read in motifRankings & corresponding annotations
+## [3.1.] Read in motifRankings & corresponding annotations
 ```{r}
 ranks <- RcisTarget::importRankings(
     dbFile = base::paste0(
-      here::here("data/20190706_NG8133_RNAseq/"),
+      here::here(),
       base::basename(dbFile)
     )
   )
 utils::data("motifAnnotations_dmel_v8")
 ```
 
-## [12.2.] Evaluate
-```{r}
-utils::str(ranks@rankings[1:5,1:5])
-
-motifAnnotations_dmel_v8 %>%
-  dplyr::distinct(motif)
-
-ranks@rankings %>%
-  dplyr::select(
-      features, dplyr::contains("mef")
-    )
-
-motifAnnotations_dmel_v8 %>%
-  dplyr::filter(
-      base::grepl("mef",TF,ignore.case = T)
-    )
-```
-
-## [12.3.] Run test enrichment on upregulated genes
+## [3.2.] Run test enrichment on upregulated genes
 ```{r}
 res_enr <- RcisTarget::calcAUC(
     geneSets = res_list,
     rankings = ranks,
-    nCores = 20
+    nCores = 4
   )
 utils::str(res_enr)
 ```
 
-## [12.4.] Read out results from enrichment
-#### 'base::rownames(res_auc)'
-#### 'res_auc[1:3,1:5]'
+## [3.3.] Read out results from enrichment
 ```{r}
 res_auc. <- RcisTarget::getAUC(
     object = res_enr
@@ -328,43 +227,7 @@ res_auc <- res_auc. %>%
   dplyr::as_tibble()
 ```
 
-## [12.5.] Plot results from enrichment
-```{r}
-res_plot <- res_auc %>%
-  tidyr::gather(
-    key = "group",
-    value = "auc",
-    -motif
-  )
-
-ggplot(
-  data = res_plot,
-  mapping = aes(
-      x = auc
-    )
-  ) +
-  geom_histogram(
-      binwidth = 0.0005
-    ) +
-  geom_vline(
-    xintercept = 0.04,
-    linetype = "dashed"
-  ) +
-  facet_wrap(
-      group ~ .,
-      nrow = 1
-    ) +
-  theme(
-    aspect.ratio = 3,
-    axis.text.x = element_text(
-      angle = 90,
-      hjust = 1,
-      vjust = 0.5
-    )
-  )
-```
-
-## [12.6.] Add annotations
+## [3.4.] Add annotations
 ```{r}
 res_anno <- RcisTarget::addMotifAnnotation(
     auc = res_enr,
@@ -373,46 +236,34 @@ res_anno <- RcisTarget::addMotifAnnotation(
   )
 ```
 
-## [12.7.] Test for "Mef2" enrichment
+## [3.5.] List of identified TFs
 ```{r}
-res_mef <- RcisTarget::addMotifAnnotation(
-    auc = res_enr,
-    motifAnnot = motifAnnotations_dmel_v8,
-    nesThreshold = 0,
-    highlightTFs = base::list(
-      RasV12 = "Mef2",
-      lglRNAiRasV12 = "Mef2",
-      lglRNAiRasV12_FM = "Mef2"
-    )
+tfs_ <- base::list(
+    nfkb = base::c("dl","Dif","Rel"),
+    jra = base::c(
+        "Jra","kay","tgo",
+        "Atf3","Atf1","Atf2",
+        "Atf6","Xbp1", "NFAT",
+        "maf-S","SoxN"
+      ),
+    stat92 = base::c("Stat92E","jim"),
+    fox = base::c("E.bx","nej","rn","foxo","fkh","pan","CG12299"),
+    grh = base::c("grh","gem"),
+    Mef2 = base::c("Mef2"),
+    nrf2 = base::c("cnc"),
+    sox14 = base::c("Sox14"),
+    myb = base::c("Myb","zfh1","sna","scrt"),
+    eg = base::c("eg","kni"),
+    br = base::c("br","fd68A","slp","fd59A")
+  )
+
+tfs <- tibble::tibble(
+    tfGroup = base::names(tfs_),
+    tfList = tfs_
   )
 ```
 
-## [12.7.] Evaluate
-```{r}
-res_anno %>%
-  dplyr::group_by(geneSet) %>% 
-  dplyr::filter(
-    dplyr::row_number() %in% c(1L,dplyr::n())
-  )
-
-res_anno %>%
-  dplyr::filter(
-    base::grepl("mef",TF_highConf,ignore.case = T) |
-    base::grepl("mef",TF_lowConf,ignore.case = T)  
-  ) %>%
-  dplyr::arrange(dplyr::desc(NES))
-
-res_anno %>%
-  dplyr::distinct(geneSet)
-
-res_mef %>%
-  dplyr::filter(
-    TFinDB %in% c("**","*")
-  )
-```
-
-## [12.8.] Classify the transcription factors
-#### see '[10.0.]' for 'tfs' object
+## [3.6.] Classify the transcription factors
 ```{r}
 res_tfs_Rcis <- res_anno %>%
   dplyr::mutate(
@@ -457,7 +308,7 @@ res_tfs_Rcis <- res_anno %>%
     )
 ```
 
-## [12.9.] Prepare plotting
+## [3.7.] Prepare plotting
 ```{r}
 res_plot_Rcis <- res_tfs_Rcis %>%
   dplyr::mutate(
@@ -500,13 +351,10 @@ res_plot_Rcis <- res_plot_Rcis %>%
       levels = base::names(tfs_),
       ordered = TRUE
     )
-  ) %>%
-  dplyr::filter(
-      !(geneset %in% base::c("lglRNAiRasV12_FM_excl","RasV12lglRNAiRasV12_incl"))
-    )
+  )
 ```
 
-## [12.9.] Plot the distribution of TF motifs
+## [3.8.] Plot the distribution of TF motifs
 ```{r}
 plot_Rcis <- ggplot2::ggplot(
   data = res_plot_Rcis,
@@ -538,11 +386,6 @@ plot_Rcis <- ggplot2::ggplot(
     breaks = genesetS[1:3],
     values = base::c("#22908C", "#FDE724", "#2E4876")
   ) +
-  # scale_color_manual(
-  #   limits = base::c(tfs$tfGroup,"Other"),
-  #   breaks = base::c(tfs$tfGroup,"Other"),
-  #   values = cols3
-  # ) +
   theme(
     aspect.ratio = 1/4,
     legend.position = "bottom",
@@ -560,25 +403,4 @@ plot_Rcis <- ggplot2::ggplot(
     )
   )
 base::print(plot_Rcis)
-```
-
-## [8.12.] Save barplot
-```{r}
-for(ext in c("pdf", "png")){
-  ggplot2::ggsave(
-    filename = base::paste0(
-        here::here("results/20190706_NG8133_RNAseq/"),
-        base::format(base::Sys.time(), "%Y%m%d"),
-        "_TFBSenrichment",
-        "_all3Genotypes",
-        "_upDown",
-        ".", ext
-        ),
-    plot = plot_Rcis,
-    device = ext,
-    dpi = 300,
-    width = 7,
-    height = 5
-  )
-}
 ```
