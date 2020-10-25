@@ -799,6 +799,59 @@ bg.denovo <- methods::new(
   )
 ```
 
+##-----------------##
+##----Drs_locus----##
+##-----------------##
+
+## [7.0.] Get genes in locus neighborhood
+```{r}
+values <- base::c(
+    "CG14961","CG14969","Drsl1",
+    "Drsl6","kst","Drs",
+    "Ythdc1","CG12010","CG12012",
+    "Ids","sty"
+  )
+
+attributes_ <- base::c(
+    "external_gene_name","ensembl_gene_id",
+    "entrezgene_id", "chromosome_name",
+    "start_position", "end_position",
+    "strand", "gene_biotype"
+  )
+
+genes_ <- biomaRt::getBM(
+    mart = ensembl,
+    values = values,
+    filter = "external_gene_name",
+    attributes = attributes_,
+    checkFilters = TRUE,
+    verbose = TRUE
+  )
+
+genes <- genes_ %>%
+  dplyr::arrange(
+      chromosome_name,start_position
+    )
+```
+
+## [7.1.] Acquire sequence
+#### to get complete sequence: 'base::as.character(drs_locus)'
+```{r}
+chr = "2L"
+start = 3330063L
+end = 3424935L
+
+drs_locus <- Biostrings::getSeq(
+    names = stringr::str_c("chr",chr),
+    start = start,
+    end = end,
+    x = Dmelanogaster
+  ) %>%
+  Biostrings::DNAString()
+```
+
+##----Motif
+
 ## [6.5.] Motif enrichment on Drs_locus
 ```{r}
 res <- PWMEnrich::motifEnrichment(
