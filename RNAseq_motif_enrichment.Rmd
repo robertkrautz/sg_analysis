@@ -17,42 +17,14 @@ library(ggrepel)
 library(ggrastr)
 library(UpSetR)
 
-library(org.Dm.eg.db)
-library(sleuth)
-library(GOstats)
-library(clusterProfiler)
 library(biomaRt)
 library(ChIPpeakAnno)
+library(RcisTarget)
 library(PWMEnrich)
 library(PWMEnrich.Dmelanogaster.background)
-library(seqinr)
+library(org.Dm.eg.db)
 library(BSgenome)
 library(BSgenome.Dmelanogaster.UCSC.dm6)
-library(universalmotif)
-library(RcisTarget)
-
-library(doParallel)
-library(foreach)
-doParallel::registerDoParallel(cores=4)
-```
-
-## ERASE
-```{r eval=FALSE}
-base::save.image(
-    base::paste0(
-      here::here("data/20190706_NG8133_RNAseq/"),
-      "20201024.RData"
-    )
-  )
-```
-
-```{r}
-base::load(
-   base::paste0(
-      here::here("data/20190706_NG8133_RNAseq/"),
-      "20201024.RData"
-    )
-  )
 ```
 
 ##--------------------##
