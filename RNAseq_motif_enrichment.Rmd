@@ -33,7 +33,26 @@ library(RcisTarget)
 
 library(doParallel)
 library(foreach)
-registerDoParallel(cores=60)
+doParallel::registerDoParallel(cores=4)
+```
+
+## ERASE
+```{r eval=FALSE}
+base::save.image(
+    base::paste0(
+      here::here("data/20190706_NG8133_RNAseq/"),
+      "20201024.RData"
+    )
+  )
+```
+
+```{r}
+base::load(
+   base::paste0(
+      here::here("data/20190706_NG8133_RNAseq/"),
+      "20201024.RData"
+    )
+  )
 ```
 
 ##---------------------##
@@ -45,7 +64,7 @@ registerDoParallel(cores=60)
 ```{r}
 res_all <- base::readRDS(
   file = base::list.files(
-      path = here::here(),
+      path = here::here("data/20190706_NG8133_RNAseq"),
       full.names = TRUE
     ) %>%
     stringr::str_subset("res_all")
@@ -472,8 +491,6 @@ dm6 <-  .GlobalEnv$processFile(
 ```
 
 ## [4.2.] Data wrangling
-#### tmp <- base::lapply(dm6, as.integer)
-#### row_sums <- base::lapply(tmp,sum)
 ```{r}
 tmp <- dplyr::as_tibble(dm6) %>%
   base::t()
@@ -488,7 +505,11 @@ tbl_long <- tmp_tbl %>%
       -chr
     ) %>%
   dplyr::mutate(
-    count = base::as.integer(count)
+      count = base::as.integer(count)
+    ) %>%
+  dplyr::filter(
+    grepl("dna:chromosome chromosome:BDGP6",chr) &
+    !grepl("mitochondrion",chr)
   )
 ```
 
@@ -508,5 +529,611 @@ gatc.freq <- tbl_long %>%
   dplyr::pull(relSum)
 
 base::names(gatc.freq) <- c("A","C","G","T")
+```
+
+##--------------------------##
+##----Promoter_sequences----##
+##--------------------------##
+
+## [5.0.] Get all dm6 genes
+```{r}
+attributes_ <- base::c(
+    "external_gene_name","ensembl_gene_id",
+    "entrezgene_id", "chromosome_name",
+    "start_position", "end_position",
+    "strand", "gene_biotype"
+  )
+
+genes_ <- biomaRt::getBM(
+    mart = ensembl,
+    attributes = attributes_,
+    checkFilters = TRUE,
+    verbose = TRUE
+  )
+```
+
+## [5.1.] Generate promoter list
+```{r}
+promoter_length = 2000L
+
+promoters_ <- genes_ %>%
+  dplyr::mutate(
+    prom_start = dplyr::case_when(
+       strand == -1L ~ `end_position`,
+       strand == 1L ~ `start_position`-promoter_length
+      ),
+    prom_end = dplyr::case_when(
+       strand == -1L ~ `end_position`+promoter_length,
+       strand == 1L ~ `start_position`
+      )
+  )
+```
+
+## [5.2.] Parallel retrieval of promoter sequences via biomaRt
+```{r}
+promoter_length = 2000L
+idType = "external_gene_name"
+
+genes <- promoters_ %>%
+  dplyr::distinct(
+      !!rlang::sym(idType)
+    ) %>%
+  dplyr::pull(
+      !!rlang::sym(idType)
+    )
+
+seqs <- biomaRt::getSequence(
+      type = idType,
+      upstream = promoter_length,
+      seqType = "gene_flank",
+      id = genes,
+      mart = ensembl
+    )
+```
+
+## [5.3.] Convert into DNAStringSet
+```{r}
+seqsSet <- seqs %>%
+  dplyr::distinct(
+      external_gene_name,
+      .keep_all = TRUE
+    ) %>%
+  dplyr::filter(
+    gene_flank != "Sequence unavailable"
+  ) %>% 
+  dplyr::pull(
+    gene_flank
+  ) %>%
+  #head(n=10) %>% 
+  Biostrings::DNAStringSet(
+    x = .
+  )
+
+base::names(seqsSet) <- seqs %>%
+  dplyr::distinct(
+      external_gene_name,
+      .keep_all = TRUE
+    ) %>%
+  dplyr::filter(
+    gene_flank != "Sequence unavailable"
+  ) %>% 
+  dplyr::pull(
+    external_gene_name
+  )
+```
+
+##----------------------------##
+##----Read_in_CisBP_motifs----##
+##----------------------------##
+
+## [6.0.] Helper function to convert into PPM
+```{r}
+matrixer <- function(pos_info){
+    if(length(pos_info)==0L){
+       return(NA) 
+      }
+    pos_mat_ <- base::matrix(
+        data = base::unlist(pos_info),
+        byrow = TRUE,
+        ncol = 4
+      )
+    base::colnames(pos_mat_) <- base::c("A","C","G","T")
+    pos_mat. = base::t(pos_mat_)
+    return(
+      base::apply(
+          X = pos_mat.,
+          MARGIN = 1:2,
+          FUN = base::as.double
+        )
+      )
+  }
+```
+
+## [6.1.] Helper function to read out CisBP PPMs
+```{r}
+readMotifs = function(filepath, meta) {
+    
+    con = base::file(
+        description = filepath,
+        open = "r"
+      )
+    
+    motifs = base::list()
+    meta_info = base::list()
+    pos_info = base::list()
+    
+    while(TRUE){
+      
+      line = base::readLines(con, n = 1)
+      line_split = stringr::str_split(line, "\t")
+      
+      if(base::length(line) == 0){
+          break
+        }
+      
+      if(line=="" & line_split[[1]][1]=="" & length(meta_info)!=0L){
+          
+          cat(meta_info$TF, "\n")
+          meta_info[["PPM"]] = .GlobalEnv$matrixer(pos_info)
+          res_info = purrr::discard(base::names(meta_info), ~ .=="Motif")
+          motifs[[meta_info$Motif]] = meta_info[res_info]
+          
+          meta_info = base::list()
+          pos_info = base::list()
+          next
+        }
+      if(line=="" & line_split[[1]][1]=="" & length(meta_info)==0L){
+          next
+        }
+      
+      if(line_split[[1]][1] %in% meta){
+          meta_info[[line_split[[1]][1]]] = line_split[[1]][2]
+          #cat(line_split[[1]][1],"\t",line_split[[1]][2],"\n")
+        }
+      
+      if(stringr::str_detect(line_split[[1]][1], "\\d.*")){
+          pos_info[[line_split[[1]][1]]] = line_split[[1]][2:5]
+          #cat(line_split[[1]][1],"\t",line_split[[1]][2:5],"\n")
+        }
+      
+      }
+    base::close(con)
+    
+    return(motifs)
+  }
+```
+
+## [6.2.] Read in PPMs for D.m.
+#### acquire CisBP on 'http://cisbp.ccbr.utoronto.ca/bulk_archive.php'
+```{r}
+file = base::paste0(
+    here::here(),
+    "CisBP_dir/",
+    "PWM.txt"
+  )
+
+info <- base::c(
+    "TF","TF Name","Gene",
+    "Motif","Family","Species"
+  )
+
+motifs <- .GlobalEnv$readMotifs(
+    filepath = file,
+    meta = info
+  )
+```
+
+## [6.3.] Read out minimum PPM_motifs
+```{r}
+motifs_min = base::list()
+for(i in 1:base::length(motifs)){
+    if(any(is.na(motifs[[i]]$PPM))){
+        next
+      }
+    name = stringr::str_c(
+        base::names(motifs)[i],
+        motifs[[i]]$`TF Name`,
+        sep="_"
+      )
+    motifs_min[[name]] = motifs[[i]]$PPM
+  }
+```
+
+## [6.4.] Build dm6 background
+```{r}
+utils::data(MotifDb.Dmel.PFM)
+
+pwms.dm6 <- PWMEnrich::toPWM(
+    motifs = motifs_min,
+    ids = base::names(motifs_min),
+    targets = base::names(motifs_min),
+    prior = gatc.freq
+  )
+
+##parameter
+pwms = motifs = pwms.dm6
+bg.seq = seqsSet #seqsSet_sub
+bg.pseudo.count = 1
+bg.len = 250
+bg.len.sizes = 2^(0:4)
+bg.source = ""
+verbose = TRUE
+algorithm = "default"
+
+##background 
+bg.seq = PWMEnrich:::.normalize.bg.seq(bg.seq)
+bg.seq.all = PWMEnrich:::concatenateSequences(bg.seq)
+bg.seq.start = seq(1, nchar(bg.seq.all) + 1, bg.len)
+bg.seq.end = bg.seq.start - 1
+bg.seq.start = bg.seq.start[1:(length(bg.seq.start) - 1)]
+bg.seq.end = bg.seq.end[2:length(bg.seq.end)]
+bg = DNAStringSet(bg.seq.all, start = bg.seq.start, end = bg.seq.end)
+    
+##delete sole-N-sequences
+al <- Biostrings::alphabetFrequency(bg)
+all.n <- which(al[,"N"] == rowSums(al))
+bg.sub <- bg[-all.n,]
+
+PWMEnrich::registerCoresPWMEnrich(4)
+PWMEnrich::useBigMemoryPWMEnrich(TRUE)
+PWMEnrich:::.PWMEnrich.Options[["numCores"]]
+
+bg.res = PWMEnrich::motifScores(
+    sequences = bg.sub,
+    motifs = pwms,
+    verbose = verbose
+  )
+
+pwm.len = base::sapply(X = pwms, FUN = length)
+bg.len.real = bg.len - pwm.len + 1
+bg.mean = colMeans(bg.res)
+bg.sd = apply(bg.res, 2, sd)
+
+bg.denovo <- methods::new(
+    Class = "PWMLognBackground",
+    bg.source = bg.source,
+    bg.len = bg.len.real, 
+    bg.mean = bg.mean,
+    bg.sd = bg.sd,
+    pwms = pwms
+  )
+```
+
+## [6.5.] Motif enrichment on Drs_locus
+```{r}
+res <- PWMEnrich::motifEnrichment(
+    sequences = drs_locus,
+    pwms = bg.denovo
+  )
+utils::str(res)
+report = PWMEnrich::sequenceReport(
+    obj = res,
+    seq.id = 1L
+  )
+```
+
+## ERASE
+```{r}
+dplyr::as_tibble(report@d) %>%
+  dplyr::filter(
+    grepl("M08214_2.00",id,ignore.case = T)
+  )
+```
+
+## [6.6.] Read out highest enriched motifs
+```{r}
+targets <- dplyr::as_tibble(report@d) %>%
+  dplyr::filter(
+    p.value < 0.05
+  ) %>% 
+  dplyr::arrange(dplyr::desc(raw.score)) %>%
+  dplyr::filter(
+      dplyr::row_number() %in% base::seq(1,10,1)
+    ) %>% 
+  dplyr::pull(target)
+
+pwmsSel <- bg.denovo$pwms[targets]
+scores <- PWMEnrich::motifScores(
+    sequences = drs_locus,
+    motifs = pwmsSel,
+    raw.scores=TRUE
+  )
+base::dim(scores[[1]])
+colnames(scores[[1]])
+```
+
+## ERASE
+```{r}
+PWMEnrich::plotMotifScores(scores)
+```
+
+## ERASE
+```{r}
+#target = "M08214_2.00_Mef2"
+target = "M08214_2.00"
+pwmsSel <- bg.denovo$pwms[target]
+scores <- PWMEnrich::motifScores(
+    sequences = drs_locus,
+    motifs = pwmsSel,
+    raw.scores=TRUE
+  )
+PWMEnrich::plotMotifScores(scores)
+```
+
+## [6.7.] Deconstruct PWMEnrich::plotMotifScores()
+```{r}
+log.fun = log2
+trans = 0.5
+legend.space = 0.3
+legend.cex = 0.9
+text.cex = 0.9
+seq.len.spacing = 8
+
+##Reverse order of motifs
+scs = base::rev(scores)
+##Read out amount of motifs
+num.seq = base::length(scs)
+##Length of sequence
+seq.len = base::sapply(
+    X = scs,
+    FUN = nrow
+  )/2
+##Longest sequence for motifs
+max.seq.len = base::max(seq.len)
+
+##Length of the current motif
+motif.len = base::apply(
+  X = scs[[1]],
+  MARGIN = 2,
+  FUN = function(x){
+      base::sum(base::is.na(x))/2 + 1
+    }
+  )
+##Read out amount of motifs
+num.motifs = base::length(motif.len)
+##Cutoffs for all motifs
+cutoff = base::rep(0, num.motifs)
+##Log-transform all values
+scs = base::lapply(
+    X = scs,
+    FUN = log.fun
+  )
+##Cut all values via cutoff
+scs = base::lapply(scs, function(s) {
+    for (i in 1:ncol(s)) {
+        sel = base::which(s[, i] <= cutoff[i])
+        if (length(sel) > 0)
+            s[sel, i] = 0
+      }
+    s
+  }
+)
+##Read maximum score across all motifs
+max.score = base::max(
+  base::sapply(
+    X = scs,
+    FUN = function(s){
+        base::max(s, na.rm = TRUE)
+      }
+    )
+  )
+```
+
+## [6.8.] Expand all motifs on forward strand
+#### read out motif name: coln = base::colnames(scs[[1]])'
+```{r}
+cutoff = 7.5
+
+tmp <- base::matrix(
+    data = scs[[1]],
+    ncol = 2
+  ) %>%
+  tibble::as.tibble() %>% 
+  dplyr::rename(
+      forward = "V1",
+      reverse = "V2"
+    ) %>%
+  dplyr::mutate(
+    nt = row_number() + start -1
+  )
+
+for_pos <- tmp %>%
+  dplyr::select(nt,forward) %>% 
+  dplyr::filter(forward >= cutoff) %>%
+  dplyr::mutate(
+    newData = purrr::pmap(
+      .l = base::list(
+          nt,
+          forward
+        ),
+      .f = function(n,f){
+        return(
+          tibble::tibble(
+            nt = base::seq(n,n+motif.len-1,1),
+            forward = base::rep(f,motif.len)
+          )
+        )
+      }
+    )
+  ) %>%
+  dplyr::select(newData) %>%
+  tidyr::unnest(newData) %>%
+  dplyr::group_by(nt) %>%
+  tidyr::nest() %>%
+  dplyr::mutate(
+    forward = purrr::map_dbl(
+      .x = data,
+      .f = function(d){
+        d %>%
+          dplyr::pull(forward) %>%
+          base::max()
+      }
+    )
+  ) %>%
+  dplyr::select(nt,forward) %>% 
+  dplyr::ungroup()
+
+full_ <- tmp %>%
+  dplyr::select(nt) %>%
+  dplyr::left_join(
+    x = .,
+    y = for_pos,
+    by = "nt"
+  )
+```
+
+## [6.9.] Expand all motifs on reverse strand
+```{r}
+rev_pos <- tmp %>%
+  dplyr::select(nt,reverse) %>% 
+  dplyr::filter(reverse >= cutoff) %>%
+  dplyr::mutate(
+    newData = purrr::pmap(
+      .l = base::list(
+          nt,
+          reverse
+        ),
+      .f = function(n,f){
+        return(
+          tibble::tibble(
+            nt = base::seq(n - motif.len + 1, n, 1),
+            reverse = base::rep(f,motif.len)
+          )
+        )
+      }
+    )
+  ) %>%
+  dplyr::select(newData) %>%
+  tidyr::unnest(newData) %>%
+  dplyr::group_by(nt) %>%
+  tidyr::nest() %>%
+  dplyr::mutate(
+    reverse = purrr::map_dbl(
+      .x = data,
+      .f = function(d){
+        d %>%
+          dplyr::pull(reverse) %>%
+          base::max()
+      }
+    )
+  ) %>%
+  dplyr::select(nt,reverse) %>% 
+  dplyr::ungroup()
+
+
+full <- full_ %>%
+  dplyr::left_join(
+    x = .,
+    y = rev_pos,
+    by = "nt"
+  ) %>%
+ dplyr::mutate_each(
+   funs = funs(
+     base::replace(
+       .,
+       base::which(
+         is.na(.)
+         ),
+       0
+       )
+     )
+   )
+```
+
+## [6.10.] Prepare genes for plotting
+```{r}
+genes_plot <- genes %>%
+  dplyr::mutate(
+    # start_position = start_position-start,
+    # end_position = end_position-start,
+    y_up = purrr::map_dbl(
+      .x = strand,
+      .f = function(s){
+        ifelse(s==1,-0.5,-4.5)
+      }
+    ),
+    y_down = purrr::map_dbl(
+      .x = strand,
+      .f = function(s){
+        ifelse(s==1,-3.5,-7.5)
+      }
+    )
+  ) %>%
+  dplyr::select(
+    external_gene_name, start_position,
+    end_position, y_up, y_down
+  )
+```
+
+## [6.11.] Prepare names for plotting
+```{r}
+names_plot <- genes_plot %>%
+  dplyr::filter(
+    external_gene_name %in% base::c("Drsl1", "Drsl6", "Drs")
+  ) %>% 
+  dplyr::mutate(
+    mid_point_x = ((end_position-start_position)/2)+start_position,
+    mid_point_y = ((y_down-y_up)/2)+y_up
+  )
+```
+
+## [6.12.] Plotting
+```{r}
+plot_drs <- ggplot2::ggplot(
+    data = full,
+    mapping = aes(
+      x = nt,
+      y = forward
+    )
+  ) +
+  # geom_bar(
+  #   stat = "identity",
+  #   width = 130
+  # ) +
+  .GlobalEnv$geom_bar_rast(
+    stat = "identity"
+  ) +
+  geom_rect(
+    data = genes_plot,
+    inherit.aes = FALSE,
+    mapping = aes(
+      xmin = start_position,
+      xmax = end_position,
+      ymin = y_down,
+      ymax = y_up
+    ) ,
+    fill = "transparent",
+    colour = "black",
+    size = 0.5
+  ) +
+  geom_text(
+    data = names_plot,
+    inherit.aes = FALSE,
+    mapping = aes(
+      x = mid_point_x,
+      y = mid_point_y,
+      label = external_gene_name
+    ),
+    size = 2,
+    colour = "darkred"
+  ) +
+  scale_y_continuous(
+    limits = base::c(-7.6,13),
+    breaks = base::seq(0,10,5),
+    minor_breaks = base::seq(2.5,12.5,5)
+  ) +
+  coord_cartesian(
+    xlim = base::c(full[[1,1]],full[[1,1]]+50000)
+  ) +
+  theme_bw() +
+  theme(
+    aspect.ratio = 1/8,
+    axis.title = element_blank(),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor.x = element_blank(),
+    panel.background = element_blank(),
+    panel.border = element_blank()
+  )
+base::print(plot_drs)
 ```
 
