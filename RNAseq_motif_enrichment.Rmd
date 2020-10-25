@@ -965,23 +965,76 @@ drs_locus <- Biostrings::getSeq(
   Biostrings::DNAString()
 ```
 
+##--------------------##
+##----Dif_dl_locus----##
+##--------------------##
+
+## [7.2.] Get genes in locus neighborhood
+```{r}
+values <- base::c(
+    "CLIP-190","CG5050", "Rpb11",
+    "CG15141","Rsph9","CG5043",
+    "CG33928", "SPH93", "CG18563",
+    "Dif","dl"
+  )
+
+attributes_ <- base::c(
+    "external_gene_name","ensembl_gene_id",
+    "entrezgene_id", "chromosome_name",
+    "start_position", "end_position",
+    "strand", "gene_biotype"
+  )
+
+genes_ <- biomaRt::getBM(
+    mart = ensembl,
+    values = values,
+    filter = "external_gene_name",
+    attributes = attributes_,
+    checkFilters = TRUE,
+    verbose = TRUE
+  )
+
+genes <- genes_ %>%
+  dplyr::arrange(
+      chromosome_name,start_position
+    ) %>%
+  dplyr::filter(
+    chromosome_name == "2L"
+  )
+```
+
+## [7.3.] Acquire sequence
+```{r}
+chr = "2L"
+## CLIP-190 - CG18563
+start = 17384700L
+end = 17458044L
+
+dl_locus <- Biostrings::getSeq(
+    names = stringr::str_c("chr",chr),
+    start = start,
+    end = end,
+    x = Dmelanogaster
+  ) %>%
+  Biostrings::DNAString()
+```
+
 ##------------------------##
 ##----Motif_enrichment----##
 ##------------------------##
 
-## [8.0.] Motif enrichment on Drs_locus
+## [8.0.] Motif enrichment on selected locus
 ```{r}
+locus = dl_locus #drs_locus
 res <- PWMEnrich::motifEnrichment(
-    sequences = drs_locus,
+    sequences = locus,
     pwms = bg.denovo
   )
-utils::str(res)
 report = PWMEnrich::sequenceReport(
     obj = res,
     seq.id = 1L
   )
 ```
-
 
 ## [8.1.] Read out highest enriched motifs
 ```{r}
@@ -997,7 +1050,7 @@ targets <- dplyr::as_tibble(report@d) %>%
 
 pwmsSel <- bg.denovo$pwms[targets]
 scores <- PWMEnrich::motifScores(
-    sequences = drs_locus,
+    sequences = locus,
     motifs = pwmsSel,
     raw.scores=TRUE
   )
@@ -1011,7 +1064,7 @@ target = "M08214_2.00_Mef2"
 #target = "M08214_2.00"
 pwmsSel <- bg.denovo$pwms[target]
 scores <- PWMEnrich::motifScores(
-    sequences = drs_locus,
+    sequences = locus,
     motifs = pwmsSel,
     raw.scores = TRUE
   )
@@ -1223,7 +1276,7 @@ genes_plot <- genes %>%
 ```{r}
 names_plot <- genes_plot %>%
   dplyr::filter(
-    external_gene_name %in% base::c("Drsl1", "Drsl6", "Drs")
+    external_gene_name %in% base::c("Dif", "dl") #base::c("Drsl1", "Drsl6", "Drs")
   ) %>% 
   dplyr::mutate(
     mid_point_x = ((end_position-start_position)/2)+start_position,
@@ -1233,7 +1286,7 @@ names_plot <- genes_plot %>%
 
 ## [8.8.] Plotting
 ```{r}
-plot_drs <- ggplot2::ggplot(
+plot_locus <- ggplot2::ggplot(
       data = full,
       mapping = aes(
         x = nt,
@@ -1273,7 +1326,11 @@ plot_drs <- ggplot2::ggplot(
       minor_breaks = base::seq(2.5,12.5,5)
     ) +
   coord_cartesian(
-      xlim = base::c(full[[1,1]],full[[1,1]]+50000)
+      #xlim = base::c(full[[1,1]],full[[1,1]]+50000) #Drs
+      xlim = base::c( #Dif,dl
+        full[[base::nrow(full),1]]-50000,
+        full[[base::nrow(full),1]]
+      )
     ) +
   theme_bw() +
   theme(
@@ -1284,6 +1341,6 @@ plot_drs <- ggplot2::ggplot(
       panel.background = element_blank(),
       panel.border = element_blank()
     )
-base::print(plot_drs)
+base::print(plot_locus)
 ```
 
