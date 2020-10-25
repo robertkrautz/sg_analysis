@@ -850,9 +850,11 @@ drs_locus <- Biostrings::getSeq(
   Biostrings::DNAString()
 ```
 
-##----Motif
+##------------------------##
+##----Motif_enrichment----##
+##------------------------##
 
-## [6.5.] Motif enrichment on Drs_locus
+## [8.0.] Motif enrichment on Drs_locus
 ```{r}
 res <- PWMEnrich::motifEnrichment(
     sequences = drs_locus,
@@ -873,7 +875,7 @@ dplyr::as_tibble(report@d) %>%
   )
 ```
 
-## [6.6.] Read out highest enriched motifs
+## [8.1.] Read out highest enriched motifs
 ```{r}
 targets <- dplyr::as_tibble(report@d) %>%
   dplyr::filter(
@@ -902,15 +904,14 @@ PWMEnrich::plotMotifScores(scores)
 
 ## ERASE
 ```{r}
-#target = "M08214_2.00_Mef2"
-target = "M08214_2.00"
+target = "M08214_2.00_Mef2"
+#target = "M08214_2.00"
 pwmsSel <- bg.denovo$pwms[target]
 scores <- PWMEnrich::motifScores(
     sequences = drs_locus,
     motifs = pwmsSel,
-    raw.scores=TRUE
+    raw.scores = TRUE
   )
-PWMEnrich::plotMotifScores(scores)
 ```
 
 ## [6.7.] Deconstruct PWMEnrich::plotMotifScores()
