@@ -982,13 +982,6 @@ report = PWMEnrich::sequenceReport(
   )
 ```
 
-## ERASE
-```{r}
-dplyr::as_tibble(report@d) %>%
-  dplyr::filter(
-    grepl("M08214_2.00",id,ignore.case = T)
-  )
-```
 
 ## [8.1.] Read out highest enriched motifs
 ```{r}
@@ -1012,12 +1005,7 @@ base::dim(scores[[1]])
 colnames(scores[[1]])
 ```
 
-## ERASE
-```{r}
-PWMEnrich::plotMotifScores(scores)
-```
-
-## ERASE
+## [8.2.] Acquire Mef2-motifScores across Drs-locus
 ```{r}
 target = "M08214_2.00_Mef2"
 #target = "M08214_2.00"
@@ -1029,7 +1017,7 @@ scores <- PWMEnrich::motifScores(
   )
 ```
 
-## [6.7.] Deconstruct PWMEnrich::plotMotifScores()
+## [8.3.] Deconstruct PWMEnrich::plotMotifScores()
 ```{r}
 log.fun = log2
 trans = 0.5
@@ -1088,8 +1076,7 @@ max.score = base::max(
   )
 ```
 
-## [6.8.] Expand all motifs on forward strand
-#### read out motif name: coln = base::colnames(scs[[1]])'
+## [8.4.] Expand all motifs on forward strand
 ```{r}
 cutoff = 7.5
 
@@ -1151,7 +1138,7 @@ full_ <- tmp %>%
   )
 ```
 
-## [6.9.] Expand all motifs on reverse strand
+## [8.5.] Expand all motifs on reverse strand
 ```{r}
 rev_pos <- tmp %>%
   dplyr::select(nt,reverse) %>% 
@@ -1209,12 +1196,10 @@ full <- full_ %>%
    )
 ```
 
-## [6.10.] Prepare genes for plotting
+## [8.6.] Prepare genes for plotting
 ```{r}
 genes_plot <- genes %>%
   dplyr::mutate(
-    # start_position = start_position-start,
-    # end_position = end_position-start,
     y_up = purrr::map_dbl(
       .x = strand,
       .f = function(s){
@@ -1234,7 +1219,7 @@ genes_plot <- genes %>%
   )
 ```
 
-## [6.11.] Prepare names for plotting
+## [8.7.] Prepare names for plotting
 ```{r}
 names_plot <- genes_plot %>%
   dplyr::filter(
@@ -1246,63 +1231,59 @@ names_plot <- genes_plot %>%
   )
 ```
 
-## [6.12.] Plotting
+## [8.8.] Plotting
 ```{r}
 plot_drs <- ggplot2::ggplot(
-    data = full,
-    mapping = aes(
-      x = nt,
-      y = forward
-    )
-  ) +
-  # geom_bar(
-  #   stat = "identity",
-  #   width = 130
-  # ) +
+      data = full,
+      mapping = aes(
+        x = nt,
+        y = forward
+      )
+    ) +
   .GlobalEnv$geom_bar_rast(
-    stat = "identity"
-  ) +
+      stat = "identity"
+    ) +
   geom_rect(
-    data = genes_plot,
-    inherit.aes = FALSE,
-    mapping = aes(
-      xmin = start_position,
-      xmax = end_position,
-      ymin = y_down,
-      ymax = y_up
-    ) ,
-    fill = "transparent",
-    colour = "black",
-    size = 0.5
-  ) +
+      data = genes_plot,
+      inherit.aes = FALSE,
+      mapping = aes(
+        xmin = start_position,
+        xmax = end_position,
+        ymin = y_down,
+        ymax = y_up
+      ) ,
+      fill = "transparent",
+      colour = "black",
+      size = 0.5
+    ) +
   geom_text(
-    data = names_plot,
-    inherit.aes = FALSE,
-    mapping = aes(
-      x = mid_point_x,
-      y = mid_point_y,
-      label = external_gene_name
-    ),
-    size = 2,
-    colour = "darkred"
-  ) +
+      data = names_plot,
+      inherit.aes = FALSE,
+      mapping = aes(
+        x = mid_point_x,
+        y = mid_point_y,
+        label = external_gene_name
+      ),
+      size = 2,
+      colour = "darkred"
+    ) +
   scale_y_continuous(
-    limits = base::c(-7.6,13),
-    breaks = base::seq(0,10,5),
-    minor_breaks = base::seq(2.5,12.5,5)
-  ) +
+      limits = base::c(-7.6,13),
+      breaks = base::seq(0,10,5),
+      minor_breaks = base::seq(2.5,12.5,5)
+    ) +
   coord_cartesian(
-    xlim = base::c(full[[1,1]],full[[1,1]]+50000)
-  ) +
+      xlim = base::c(full[[1,1]],full[[1,1]]+50000)
+    ) +
   theme_bw() +
   theme(
-    aspect.ratio = 1/8,
-    axis.title = element_blank(),
-    panel.grid.major.x = element_blank(),
-    panel.grid.minor.x = element_blank(),
-    panel.background = element_blank(),
-    panel.border = element_blank()
-  )
+      aspect.ratio = 1/8,
+      axis.title = element_blank(),
+      panel.grid.major.x = element_blank(),
+      panel.grid.minor.x = element_blank(),
+      panel.background = element_blank(),
+      panel.border = element_blank()
+    )
 base::print(plot_drs)
 ```
 
