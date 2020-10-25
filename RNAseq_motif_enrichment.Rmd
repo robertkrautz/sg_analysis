@@ -55,6 +55,121 @@ base::load(
   )
 ```
 
+##--------------------##
+##----GeomBarRastr----##
+##--------------------##
+
+## [0.1.] Device functions for rastering bar plot
+```{r}
+DrawGeomBarRast <- function(
+      data,
+      panel_params,
+      coord,
+      na.rm = FALSE,
+      raster.width = NULL,
+      raster.height = NULL,
+      raster.dpi = 300
+    ) {
+    if (base::is.null(raster.width)) {
+      raster.width <- graphics::par('fin')[1]
+    }
+  
+    if (base::is.null(raster.height)) {
+      raster.height <- graphics::par('fin')[2]
+    }
+  
+    prev_dev_id <- grDevices::dev.cur()
+  
+    p <- ggplot2::GeomBar$draw_panel(
+        data,
+        panel_params,
+        coord
+      )
+    dev_id <- Cairo::Cairo(
+        type = 'raster',
+        width = raster.width*raster.dpi,
+        height = raster.height*raster.dpi,
+        dpi = raster.dpi,
+        units = 'px',
+        bg = "transparent"
+      )[1]
+  
+    grid::pushViewport(
+      grid::viewport(
+          width = 1,
+          height = 1
+        )
+      )
+    grid::grid.rect(
+        x = p$x,
+        y = p$y,
+        width = p$width,
+        height = p$height,
+        just = p$just,
+        hjust = p$hjust,
+        vjust = p$vjust,
+        name = p$name,
+        gp = gpar(fill = "black"), #p$gp,
+        vp = p$vp,
+        draw = T
+      )
+    grid::popViewport()
+    cap <- grid::grid.cap()
+    grDevices::dev.off(dev_id)
+    grDevices::dev.set(prev_dev_id)
+  
+    grid::rasterGrob(
+        cap,
+        x=0,
+        y=0,
+        width = 1,
+        height = 1,
+        default.units = "native",
+        just = base::c("left","bottom")
+      )
+  }
+
+GeomBarRast <- ggplot2::ggproto(
+    `_class` = "GeomBarRast",
+    `_inherit` = ggplot2::GeomBar,
+    draw_panel = DrawGeomBarRast
+  )
+```
+
+## [0.2.] Extension to ggrastr package
+```{r}
+geom_bar_rast <- function(
+  mapping = NULL,
+  data = NULL,
+  stat = "identity",
+  position = "identity",
+  ...,
+  na.rm = FALSE,
+  show.legend = NA,
+  inherit.aes = TRUE,
+  raster.width = NULL,
+  raster.height = NULL,
+  raster.dpi = 300
+  ) {
+  ggplot2::layer(
+    data = data,
+    mapping = mapping,
+    stat = stat,
+    geom = GeomBarRast,
+    position = position,
+    show.legend = show.legend,
+    inherit.aes = inherit.aes,
+    params = base::list(
+        na.rm = na.rm,
+        raster.width = raster.width,
+        raster.height = raster.height,
+        raster.dpi = raster.dpi,
+        ...
+      )
+  )
+}
+```
+
 ##---------------------##
 ##----Prerequisites----##
 ##---------------------##
